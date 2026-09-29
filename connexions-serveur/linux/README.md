@@ -9,8 +9,17 @@ Exemple de rendu (données fictives) : [`exemple/Exemple_rapport_connexions_linu
 ## Utilisation rapide : utilisateurs SDI et SDIA, septembre 2026
 
 ```bash
-# copier le script sur le serveur (ex. /opt/scripts), puis :
-sudo python3 rapport_connexions.py --mois 2026-09 --echecs --secure
+# copier rapport_connexions.py et rapport_connexions.sh sur le serveur (ex. /opt/scripts), puis :
+chmod +x rapport_connexions.sh
+sudo ./rapport_connexions.sh --mois 2026-09 --echecs --secure
+```
+
+Le lanceur `rapport_connexions.sh` trouve tout seul un Python 3 sur le serveur. Sur **RHEL 8**, `python3`
+n'est souvent pas installé, mais le Python interne du système est toujours présent (c'est lui qui fait
+tourner `dnf`). On peut donc aussi lancer directement, sans rien installer :
+
+```bash
+sudo /usr/libexec/platform-python rapport_connexions.py --mois 2026-09 --echecs --secure
 ```
 
 Fichiers générés dans `Rapports/` à côté du script :
@@ -58,8 +67,9 @@ python3 rapport_connexions.py --mois 2026-09 --wtmp ./srv2/wtmp* --btmp ./srv2/b
 
 ## Prérequis / points d'attention
 
-- **Python 3.6+** : présent par défaut sur RHEL 8/9 (`python3`, sinon `/usr/libexec/platform-python`).
-  Sur RHEL 7 : `sudo yum install python3`. Aucune bibliothèque externe n'est nécessaire.
+- **Python 3.3+**, sans bibliothèque externe. Rien à installer : RHEL 8 fournit toujours
+  `/usr/libexec/platform-python` (3.6), RHEL 9 fournit `python3`. Sur RHEL 7 sans python3, on peut utiliser
+  la version PowerShell, ou copier `wtmp`/`btmp` sur une autre machine et y lancer le script (`--wtmp`, `--btmp`).
 - **Lancer avec `sudo`** : `btmp` et `secure` ne sont lisibles que par root.
 - **Rotation des journaux** : `wtmp` et `btmp` sont archivés **tous les mois** par logrotate
   (`/var/log/wtmp-20261001`, etc.) et `secure` **chaque semaine** (4 semaines conservées par défaut).
