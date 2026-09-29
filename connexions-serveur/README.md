@@ -1,5 +1,9 @@
 # Rapport des connexions utilisateurs (par adresse IP)
 
+> **Deux versions :**
+> - **Linux / Red Hat** : [`linux/rapport_connexions.py`](linux/) (journaux wtmp / btmp / secure), voir [`linux/README.md`](linux/README.md)
+> - **Windows Server** : `Get-RapportConnexions.ps1` (journal de sécurité), décrit ci-dessous
+
 Script PowerShell qui extrait du **journal de sécurité Windows** la **date et l'heure de connexion**
 des utilisateurs sur un serveur, et produit un **rapport HTML professionnel classé par adresse IP**,
 avec exports CSV pour Excel.
