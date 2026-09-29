@@ -21,10 +21,10 @@
     Date de fin (exclue). Par défaut : maintenant.
 
 .PARAMETER Utilisateurs
-    Comptes à inclure (jokers acceptés). Par défaut : SDI* et SDIA*. Utiliser '*' pour tous.
+    Comptes à inclure (jokers acceptés). Par défaut : '*' = tous les utilisateurs.
 
 .PARAMETER Groupes
-    Groupes (AD ou locaux) dont les membres sont inclus, ex. -Groupes SDI,SDIA.
+    Groupes (AD ou locaux) dont les membres sont inclus, ex. -Groupes "Utilisateurs du Bureau à distance".
 
 .PARAMETER TypesConnexion
     Types d'ouverture de session retenus. Par défaut : 2 (console), 10 (Bureau à distance / RDP),
@@ -54,10 +54,10 @@
 
 .EXAMPLE
     .\Get-RapportConnexions.ps1 -Mois 2026-09
-    Connexions des comptes SDI* / SDIA* sur le serveur local en septembre 2026.
+    Connexions de tous les utilisateurs sur le serveur local en septembre 2026.
 
 .EXAMPLE
-    .\Get-RapportConnexions.ps1 -Mois 2026-09 -Groupes SDI,SDIA -InclureEchecs -ResoudreDNS -Ouvrir
+    .\Get-RapportConnexions.ps1 -Mois 2026-09 -Groupes 'Utilisateurs du Bureau à distance' -InclureEchecs -ResoudreDNS -Ouvrir
 
 .EXAMPLE
     .\Get-RapportConnexions.ps1 -Mois 2026-09 -Serveurs SRV-IE01,SRV-IE02
@@ -71,7 +71,7 @@ param(
     [string]$Mois,
     [datetime]$Debut,
     [datetime]$Fin,
-    [string[]]$Utilisateurs = @('SDI*', 'SDIA*'),
+    [string[]]$Utilisateurs = @('*'),
     [string[]]$Groupes,
     [int[]]$TypesConnexion = @(2, 10, 11),
     [switch]$InclureEchecs,
@@ -103,7 +103,7 @@ if (-not $DossierSortie) {
 }
 if (-not (Test-Path $DossierSortie)) { New-Item -ItemType Directory -Path $DossierSortie -Force | Out-Null }
 
-# Si seuls des groupes sont fournis, on ne garde pas le filtre SDI* par défaut
+# Si seuls des groupes sont fournis, on ne garde pas le filtre « tous » par défaut
 if ($Groupes -and -not $PSBoundParameters.ContainsKey('Utilisateurs')) { $Utilisateurs = @() }
 
 $LibellesTypes = @{
@@ -282,8 +282,8 @@ function Get-Connexions {
 
 function Get-ConnexionsDemo {
     $rnd = New-Object System.Random 42
-    $users = 'SDI01', 'SDI02', 'SDI03', 'SDI07', 'SDIA01', 'SDIA02', 'SDIA05'
-    $ips = [ordered]@{ '10.12.4.21' = 'PC-SDI-021'; '10.12.4.35' = 'PC-SDI-035'; '10.12.6.110' = 'PC-SDIA-110'; '10.12.6.118' = 'PC-SDIA-118'; '192.168.50.14' = 'VPN-014'; 'Local (console)' = '' }
+    $users = 'jdupont', 'mmartin', 'kbenali', 'sbernard', 'Administrateur', 'lpetit', 'admin01'
+    $ips = [ordered]@{ '10.12.4.21' = 'PC-021'; '10.12.4.35' = 'PC-035'; '10.12.6.110' = 'PC-110'; '10.12.6.118' = 'PC-118'; '192.168.50.14' = 'VPN-014'; 'Local (console)' = '' }
     $cleIps = @($ips.Keys)
     $liste = New-Object System.Collections.Generic.List[object]
     for ($jour = $Debut.Date; $jour -lt $Fin; $jour = $jour.AddDays(1)) {
@@ -323,7 +323,8 @@ function New-RapportHtml {
     $titreServeurs = ($Connexions | Select-Object -ExpandProperty Serveur -Unique) -join ', '
     if (-not $titreServeurs) { $titreServeurs = ($Serveurs -join ', ') }
     $filtre = @()
-    if ($Utilisateurs) { $filtre += ($Utilisateurs -join ', ') }
+    if ($Utilisateurs -and ($Utilisateurs -join ',') -eq '*') { $filtre += 'Tous les utilisateurs' }
+    elseif ($Utilisateurs) { $filtre += ($Utilisateurs -join ', ') }
     if ($Groupes) { $filtre += 'membres de ' + ($Groupes -join ', ') }
     $types = ($TypesConnexion | ForEach-Object { if ($LibellesTypes.ContainsKey($_)) { $LibellesTypes[$_] } else { "Type $_" } }) -join ', '
 

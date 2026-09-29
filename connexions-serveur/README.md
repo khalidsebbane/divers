@@ -8,8 +8,8 @@ Script PowerShell qui extrait du **journal de sécurité Windows** la **date et 
 des utilisateurs sur un serveur, et produit un **rapport HTML professionnel classé par adresse IP**,
 avec exports CSV pour Excel.
 
-Cas d'usage d'origine : extraire les connexions des utilisateurs **SDI** et **SDIA** sur le serveur
-pendant le **mois de septembre**.
+Cas d'usage d'origine : extraire les connexions de **tous les utilisateurs** du serveur pendant le
+**mois de septembre** (demande des sociétés SDI et SDIA).
 
 ## Contenu du rapport
 
@@ -35,7 +35,7 @@ Fichiers générés dans `Rapports\` :
 Sur le serveur, ouvrir PowerShell **en tant qu'administrateur** (nécessaire pour lire le journal de sécurité) :
 
 ```powershell
-# Connexions SDI* et SDIA* de septembre 2026, avec les échecs, puis ouverture du rapport
+# Connexions de tous les utilisateurs en septembre 2026, avec les échecs, puis ouverture du rapport
 .\Get-RapportConnexions.ps1 -Mois 2026-09 -InclureEchecs -Ouvrir
 ```
 
@@ -44,12 +44,11 @@ Ou double-cliquer / lancer en admin : `Lancer-Rapport.bat 2026-09`
 ### Autres exemples
 
 ```powershell
-# Filtrer sur les membres des groupes AD SDI et SDIA (au lieu des préfixes de comptes)
-.\Get-RapportConnexions.ps1 -Mois 2026-09 -Groupes SDI,SDIA
+# Limiter aux membres de groupes AD ou locaux
+.\Get-RapportConnexions.ps1 -Mois 2026-09 -Groupes 'Utilisateurs du Bureau à distance'
 
-# Comptes précis / tous les comptes
-.\Get-RapportConnexions.ps1 -Mois 2026-09 -Utilisateurs 'SDI*','jdupont'
-.\Get-RapportConnexions.ps1 -Mois 2026-09 -Utilisateurs '*'
+# Limiter à certains comptes
+.\Get-RapportConnexions.ps1 -Mois 2026-09 -Utilisateurs 'adm*','jdupont'
 
 # Période libre
 .\Get-RapportConnexions.ps1 -Debut '2026-09-15' -Fin '2026-09-20'
@@ -73,7 +72,7 @@ Ou double-cliquer / lancer en admin : `Lancer-Rapport.bat 2026-09`
 |---|---|---|
 | `-Mois` | — | Mois `AAAA-MM` (prioritaire sur `-Debut`/`-Fin`) |
 | `-Debut` / `-Fin` | mois en cours | Période libre (fin exclue) |
-| `-Utilisateurs` | `SDI*`, `SDIA*` | Comptes à inclure, jokers acceptés |
+| `-Utilisateurs` | `*` (tous) | Limiter à certains comptes, jokers acceptés |
 | `-Groupes` | — | Groupes AD ou locaux dont les membres sont inclus |
 | `-TypesConnexion` | `2,10,11` | 2 = console, 10 = Bureau à distance (RDP), 11 = cache, 7 = déverrouillage, 3 = réseau |
 | `-InclureEchecs` | non | Ajoute les échecs (4625) avec le motif (mot de passe incorrect, compte verrouillé...) |

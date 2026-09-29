@@ -6,7 +6,7 @@ ainsi que des exports CSV pour Excel.
 
 Exemple de rendu (données fictives) : [`exemple/Exemple_rapport_connexions_linux.html`](exemple/Exemple_rapport_connexions_linux.html)
 
-## Utilisation rapide : utilisateurs SDI et SDIA, septembre 2026
+## Utilisation rapide : tous les utilisateurs, septembre 2026
 
 ```bash
 # copier rapport_connexions.py et rapport_connexions.sh sur le serveur (ex. /opt/scripts), puis :
@@ -44,8 +44,8 @@ Pour récupérer les fichiers sur un poste Windows : WinSCP, ou `scp user@serveu
 |---|---|---|
 | `--mois AAAA-MM` | — | Mois complet à analyser |
 | `--debut` / `--fin` `AAAA-MM-JJ` | mois en cours | Période libre (fin exclue) |
-| `-u, --utilisateurs` | `sdi*,sdia*` | Comptes (jokers, insensible à la casse). `'*'` = tous |
-| `-g, --groupes` | — | Groupes Linux dont les membres sont inclus, ex. `-g sdi,sdia` |
+| `-u, --utilisateurs` | `*` (tous) | Limiter à certains comptes (jokers, insensible à la casse), ex. `-u 'jdupont,adm*'` |
+| `-g, --groupes` | — | Groupes Linux dont les membres sont inclus, ex. `-g wheel` |
 | `--echecs` | non | Ajoute les tentatives échouées |
 | `--secure` | non | Lit aussi `/var/log/secure*` (sftp/scp et motifs des échecs) |
 | `--wtmp`, `--btmp`, `--secure-fichiers` | `/var/log/...*` | Fichiers à lire (ex. copies d'un autre serveur) |
@@ -56,10 +56,10 @@ Pour récupérer les fichiers sur un poste Windows : WinSCP, ou `scp user@serveu
 ### Exemples
 
 ```bash
-sudo python3 rapport_connexions.py --mois 2026-09                        # SDI* / SDIA*, sessions uniquement
-sudo python3 rapport_connexions.py --mois 2026-09 -g sdi,sdia --echecs   # par groupes Linux
-sudo python3 rapport_connexions.py --debut 2026-09-15 --fin 2026-09-20 -u 'sdi01,sdia*'
-sudo python3 rapport_connexions.py --mois 2026-09 -u '*' --resoudre-dns   # tous les comptes
+sudo python3 rapport_connexions.py --mois 2026-09                        # tous les utilisateurs, sessions uniquement
+sudo python3 rapport_connexions.py --mois 2026-09 -g wheel --echecs      # membres d'un groupe Linux
+sudo python3 rapport_connexions.py --debut 2026-09-15 --fin 2026-09-20 -u 'jdupont,adm*'
+sudo python3 rapport_connexions.py --mois 2026-09 --resoudre-dns         # avec le nom DNS des IP
 
 # Analyser les journaux d'un autre serveur copiés en local
 python3 rapport_connexions.py --mois 2026-09 --wtmp ./srv2/wtmp* --btmp ./srv2/btmp* --echecs

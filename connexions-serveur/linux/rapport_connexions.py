@@ -14,9 +14,9 @@ Sorties (dossier ./Rapports par défaut) :
   - CSV du détail et CSV de la synthèse par IP (séparateur « ; », UTF-8 avec BOM pour Excel)
 
 Exemples :
-  sudo python3 rapport_connexions.py --mois 2026-09
-  sudo python3 rapport_connexions.py --mois 2026-09 --echecs --secure
-  sudo python3 rapport_connexions.py --mois 2026-09 --groupes sdi,sdia
+  sudo python3 rapport_connexions.py --mois 2026-09 --echecs --secure    (tous les utilisateurs)
+  sudo python3 rapport_connexions.py --mois 2026-09 -u 'jdupont,adm*'
+  sudo python3 rapport_connexions.py --mois 2026-09 --groupes wheel
   python3 rapport_connexions.py --demo --mois 2026-09 --echecs
 
 Compatible Python 3.6+ (RHEL 8 : python3 ou /usr/libexec/platform-python ; RHEL 7 : yum install python3).
@@ -147,7 +147,7 @@ class Filtre(object):
 
     def ok(self, user):
         u = (user or '').lower()
-        if not u or u in ('reboot', 'shutdown', 'runlevel', 'login', 'unknown', 'root') and not self._explicite(u):
+        if not u or u in ('reboot', 'shutdown', 'runlevel', 'login', 'unknown'):
             return False
         return u in self.membres or self._explicite(u)
 
@@ -283,9 +283,9 @@ def collecter_secure(fichiers_secure, debut, fin, filtre, wtmp, echecs):
 
 def demo(debut, fin, echecs):
     rnd = random.Random(42)
-    users = ['sdi01', 'sdi02', 'sdi03', 'sdi07', 'sdia01', 'sdia02', 'sdia05']
-    ips = [('10.12.4.21', 'pc-sdi-021'), ('10.12.4.35', 'pc-sdi-035'), ('10.12.6.110', 'pc-sdia-110'),
-           ('10.12.6.118', 'pc-sdia-118'), ('192.168.50.14', 'vpn-014')]
+    users = ['root', 'jdupont', 'mmartin', 'kbenali', 'oracle', 'sbernard', 'admin01']
+    ips = [('10.12.4.21', 'pc-021'), ('10.12.4.35', 'pc-035'), ('10.12.6.110', 'pc-110'),
+           ('10.12.6.118', 'pc-118'), ('192.168.50.14', 'vpn-014')]
     res = []
     j = debut
     while j < fin:
@@ -444,7 +444,7 @@ def rapport_html(conn, sip, susers, args, debut, fin, serveur, chemin):
     F = '%d/%m/%Y %H:%M:%S'
     ok = [c for c in conn if c['resultat'] == 'Succès']
     ko = [c for c in conn if c['resultat'] != 'Succès']
-    comptes = ', '.join(args.utilisateurs)
+    comptes = 'Tous les utilisateurs' if args.utilisateurs == ['*'] else ', '.join(args.utilisateurs)
     if args.groupes:
         comptes += (' + ' if comptes else '') + 'membres de ' + ', '.join(args.groupes)
     sources = 'wtmp' + (' + btmp' if args.echecs and not args.secure else '') + (' + secure' if args.secure else '')
@@ -541,9 +541,9 @@ def main():
     p.add_argument('--mois', help='Mois à analyser AAAA-MM (ex. 2026-09)')
     p.add_argument('--debut', help='Date de début AAAA-MM-JJ (incluse)')
     p.add_argument('--fin', help='Date de fin AAAA-MM-JJ (exclue)')
-    p.add_argument('-u', '--utilisateurs', default='sdi*,sdia*',
-                   help='Comptes à inclure, séparés par des virgules, jokers acceptés, insensible à la casse (défaut : sdi*,sdia*). "*" = tous')
-    p.add_argument('-g', '--groupes', default='', help='Groupes Linux dont les membres sont inclus (ex. sdi,sdia)')
+    p.add_argument('-u', '--utilisateurs', default='*',
+                   help='Comptes à inclure, séparés par des virgules, jokers acceptés, insensible à la casse (défaut : * = tous les utilisateurs)')
+    p.add_argument('-g', '--groupes', default='', help='Groupes Linux dont les membres sont inclus (ex. wheel)')
     p.add_argument('--echecs', action='store_true', help='Inclure les tentatives de connexion échouées')
     p.add_argument('--secure', action='store_true',
                    help='Lire aussi /var/log/secure* : connexions sftp/scp (sans terminal) et motifs des échecs')
@@ -581,7 +581,7 @@ def main():
     print('\n=== Rapport des connexions utilisateurs ===')
     print('  Serveur : %s' % serveur)
     print('  Période : %s -> %s' % (debut.strftime('%d/%m/%Y %H:%M'), fin.strftime('%d/%m/%Y %H:%M')))
-    print('  Comptes : %s' % ', '.join(utils + ['groupe:' + g for g in args.groupes]))
+    print('  Comptes : %s' % (', '.join(utils + ['groupe:' + g for g in args.groupes]).replace('*', 'tous') or 'tous'))
 
     if args.demo:
         print('  Mode démo : données fictives')
