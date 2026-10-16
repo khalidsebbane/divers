@@ -1,0 +1,26 @@
+## Règles auditd pour le SIEM Informix
+## Installation : cp siem-informix.rules /etc/audit/rules.d/ && augenrules --load
+## Adapter /opt/informix (INFORMIXDIR) et 1001 (uid du compte informix : id -u informix).
+## Le champ « auid » conserve l'utilisateur de connexion d'origine, même après su / sudo.
+
+## 1. Commandes d'administration Informix (onmode, onstat, ontape, onbar, dbaccess, onaudit...)
+-a always,exit -F arch=b64 -S execve -F dir=/opt/informix/bin -F auid>=1000 -F auid!=unset -k siem_exec_informix
+
+## 2. Toute commande lancée sous le compte informix par une personne connectée
+-a always,exit -F arch=b64 -S execve -F euid=1001 -F auid>=1000 -F auid!=unset -k siem_exec_informix
+
+## 3. Configuration Informix
+-w /opt/informix/etc/ -p wa -k siem_conf_informix
+
+## 4. Comptes, mots de passe et droits sudo
+-w /etc/passwd -p wa -k siem_identite
+-w /etc/shadow -p wa -k siem_identite
+-w /etc/group -p wa -k siem_identite
+-w /etc/sudoers -p wa -k siem_sudoers
+-w /etc/sudoers.d/ -p wa -k siem_sudoers
+
+## 5. (Optionnel, volumineux) toutes les commandes de tous les utilisateurs humains
+## -a always,exit -F arch=b64 -S execve -F auid>=1000 -F auid!=unset -k siem_cmd
+
+## 6. (Optionnel) accès directs aux fichiers de données Informix hors moteur
+## -w /informix/chunks/ -p rwa -k siem_donnees_informix

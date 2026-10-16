@@ -1,0 +1,4 @@
+donnees/
+.env
+certs/
+__pycache__/

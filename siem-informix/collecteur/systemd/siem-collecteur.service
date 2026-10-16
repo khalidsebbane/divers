@@ -1,0 +1,9 @@
+[Unit]
+Description=Collecteur SIEM Informix (une passe)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Lancé en root : lecture de /var/log/secure, btmp et audit.log
+ExecStart=/usr/libexec/platform-python /opt/siem-informix/collecteur/collecteur.py -c /opt/siem-informix/collecteur/collecteur.ini
+Nice=10

@@ -1,0 +1,11 @@
+services:
+  portail:
+    build: .
+    image: siem-informix-portail:1.0
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./donnees:/donnees          # base d'événements + comptes du portail (à sauvegarder)
+      - ./certs:/certs:ro           # cert.pem + cle.pem

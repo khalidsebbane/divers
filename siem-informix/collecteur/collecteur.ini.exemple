@@ -1,0 +1,63 @@
+# Configuration du collecteur SIEM Informix
+# Copier en collecteur.ini et adapter. Fichier à protéger : chmod 600 collecteur.ini (contient le jeton).
+
+[collecteur]
+# Dossier de travail (état, événements en attente)
+dossier = /opt/siem-informix/collecteur/var
+# Sources actives : wtmp, btmp, secure, auditd, sessions, onaudit, applicatif
+sources = wtmp,btmp,secure,auditd,sessions,onaudit,applicatif
+# Au premier lancement, nombre de jours d'historique repris
+historique_jours = 45
+
+[portail]
+url = https://siem-portail.exemple.local:8443
+jeton = A_REMPLACER_PAR_LE_JETON_DU_PORTAIL
+# Autorité de certification du portail (certificat interne)
+ca = /opt/siem-informix/collecteur/ca-portail.pem
+verifier_certificat = oui
+taille_lot = 1000
+
+[systeme]
+wtmp = /var/log/wtmp*
+btmp = /var/log/btmp*
+secure = /var/log/secure*
+auditd = /var/log/audit/audit.log*
+
+[informix]
+# Environnement Informix (sinon repris de l'environnement du compte qui lance le collecteur)
+informixdir = /opt/informix
+informixserver = ol_prod
+onconfig = onconfig.ol_prod
+informixsqlhosts =
+dbdate = Y4MD-
+encodage = latin-1
+timeout = 120
+# Résoudre en adresse IP le nom de machine client des sessions base
+resoudre_ip = oui
+# Lecture de l'audit Informix : commande (sortie texte) et/ou fichiers déjà extraits
+commande_onshowaudit = onshowaudit -n ol_prod
+fichiers_onshowaudit =
+# Position des champs dans une ligne onshowaudit (à valider sur un extrait réel, voir docs/informix-audit.md)
+audit_champ_date = 1
+audit_champ_machine = 2
+audit_champ_pid = 3
+audit_champ_utilisateur = 5
+audit_champ_erreur = 6
+audit_champ_code = 7
+audit_champ_objet = 8
+
+[applicatif]
+# Table applicative des programmes lancés (fournie par le DBA)
+base = A_REMPLACER_NOM_DE_LA_BASE
+table = agr_lds
+# Exclure les traitements automatiques (cron)
+filtre = (alds_complement IS NULL OR alds_complement NOT MATCHES 'Xp_cron*')
+# Compte base utilisé par l'application (compte partagé)
+compte_base = regix
+# Colonnes : détectées automatiquement, à forcer si la détection se trompe
+colonne_date = alds_open
+colonne_fin =
+colonne_utilisateur =
+colonne_programme =
+colonne_ip =
+colonne_poste =
