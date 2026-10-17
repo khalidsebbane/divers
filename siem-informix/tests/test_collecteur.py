@@ -100,3 +100,24 @@ def test_empreinte_stable():
     t = dt.datetime(2026, 9, 1, 8, 0)
     assert c.evenement(t, 'systeme', 'connexion', 'x', compte='a')['empreinte'] == \
         c.evenement(t, 'systeme', 'connexion', 'x', compte='a')['empreinte']
+
+
+def test_requete_agr_lds(tmp_path, monkeypatch):
+    """La requête du DBA (agr_lds, alds_open, exclusion Xp_cron*) est bien celle envoyée à dbaccess."""
+    bin_ = tmp_path / 'bin'
+    bin_.mkdir()
+    journal = tmp_path / 'sql.log'
+    faux = bin_ / 'dbaccess'
+    faux.write_text('#!/bin/bash\nsql=$(cat); echo "$sql" >> "%s"\n'
+                    'f=$(echo "$sql" | sed -n "s/^UNLOAD TO \'\\([^\']*\\)\'.*/\\1/p")\n'
+                    'if echo "$sql" | grep -q syscolumns; then printf "alds_id|\\nalds_user|\\nalds_open|\\nalds_complement|\\n" > "$f";\n'
+                    'else printf "101|jdupont|2026-09-01 08:12:03|Xp_saisie_dossier|\\n" > "$f"; fi\n' % journal)
+    faux.chmod(0o755)
+    cfg = conf(informix={'informixdir': str(tmp_path)},
+               applicatif={'base': 'prod', 'table': 'agr_lds', 'compte_base': 'regix', 'colonne_date': 'alds_open',
+                           'filtre': "(alds_complement IS NULL OR alds_complement NOT MATCHES 'Xp_cron*')"})
+    evts = c.collecter_applicatif(cfg, dt.datetime(2026, 9, 1))
+    sql = journal.read_text().splitlines()[-1]
+    assert "FROM agr_lds WHERE alds_open >= '2026-09-01 00:00:00'" in sql
+    assert "AND (alds_complement IS NULL OR alds_complement NOT MATCHES 'Xp_cron*') ORDER BY alds_open" in sql
+    assert [(e['utilisateur'], e['compte'], e['objet']) for e in evts] == [('jdupont', 'regix', 'Xp_saisie_dossier')]
