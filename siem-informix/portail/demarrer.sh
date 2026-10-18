@@ -1,8 +1,18 @@
 #!/bin/sh
-# Lance le portail ; HTTPS si un certificat est présent dans /certs (cert.pem + cle.pem)
+# Lance le portail en HTTPS. Sans certificat fourni, un certificat autosigné est créé au premier démarrage
+# (à remplacer par un certificat de l'autorité interne : cert.pem + cle.pem dans le dossier des certificats).
 set -e
-if [ -f /certs/cert.pem ] && [ -f /certs/cle.pem ]; then
-  exec uvicorn app.main:app --host 0.0.0.0 --port 8443 --ssl-certfile /certs/cert.pem --ssl-keyfile /certs/cle.pem --proxy-headers
+CERTS="${SIEM_CERTS:-/certs}"
+DONNEES="$(dirname "${SIEM_BASE:-/donnees/siem.db}")"
+if [ ! -f "$CERTS/cert.pem" ] || [ ! -f "$CERTS/cle.pem" ]; then
+  CERTS="$DONNEES/certs"
+  if [ ! -f "$CERTS/cert.pem" ]; then
+    mkdir -p "$CERTS"
+    openssl req -x509 -newkey rsa:3072 -nodes -days 825 -subj "/CN=$(hostname)" \
+      -addext "subjectAltName=DNS:$(hostname)" -keyout "$CERTS/cle.pem" -out "$CERTS/cert.pem" 2>/dev/null
+    chmod 600 "$CERTS/cle.pem"
+    echo "Certificat autosigné créé dans $CERTS (à remplacer par un certificat de l'autorité interne)." >&2
+  fi
 fi
-echo "ATTENTION : pas de certificat dans /certs, portail en HTTP (à réserver aux tests)" >&2
-exec uvicorn app.main:app --host 0.0.0.0 --port 8443 --proxy-headers
+exec uvicorn app.main:app --host 0.0.0.0 --port "${SIEM_PORT:-8443}" --ssl-certfile "$CERTS/cert.pem" --ssl-keyfile "$CERTS/cle.pem" \
+  --proxy-headers --no-server-header

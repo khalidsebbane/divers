@@ -3,21 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Portail SIEM Informix</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%231c5cab%27/%3E%3Cpath d=%27M4 11V5h2v6zm3 0V3h2v8zm3 0V7h2v4z%27 fill=%27white%27/%3E%3C/svg%3E">
+<title>Portail SIEM</title>
+<link rel="icon" href="/marque/logo">
 <link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/marque.css">
 </head>
 <body>
 <div class="app">
   <nav class="menu" id="menu">
-    <div class="marque">SIEM Informix<small>Traçabilité système &amp; base</small></div>
+    <div class="marque"><img id="logo" alt="" hidden><b id="marque-nom">SIEM</b><small id="marque-st">Traçabilité système, base et applicatif</small></div>
     <a href="#/tableau" data-vue="tableau"><span class="ico">▦</span>Tableau de bord</a>
     <a href="#/utilisateurs" data-vue="utilisateurs"><span class="ico">☺</span>Utilisateurs</a>
     <a href="#/recherche" data-vue="recherche"><span class="ico">⌕</span>Recherche</a>
     <a href="#/alertes" data-vue="alertes"><span class="ico">!</span>Alertes</a>
-    <a href="#/postes" data-vue="postes"><span class="ico">⌂</span>Postes</a>
     <a href="#/assistant" data-vue="assistant"><span class="ico">✦</span>Assistant</a>
-    <div class="pied" id="qui"></div>
+    <div class="section admin-seul" hidden>Administration</div>
+    <a href="#/collecte" data-vue="collecte" class="admin-seul" hidden><span class="ico">⇄</span>Collecte</a>
+    <a href="#/postes" data-vue="postes" class="admin-seul" hidden><span class="ico">⌂</span>Postes</a>
+    <a href="#/comptes" data-vue="comptes" class="admin-seul" hidden><span class="ico">⚿</span>Comptes locaux</a>
+    <a href="#/journal" data-vue="journal" class="admin-seul" hidden><span class="ico">☰</span>Journal d'audit</a>
+    <a href="#/parametres" data-vue="parametres" class="admin-seul" hidden><span class="ico">⚙</span>Paramètres</a>
+    <div class="pied" id="version"></div>
   </nav>
   <div class="contenu">
     <header class="barre">
@@ -36,6 +42,8 @@
         <input type="date" id="fin" aria-label="Fin" hidden>
         <button class="bouton" id="btn-theme" title="Thème clair / sombre">◐</button>
         <button class="bouton principal" id="btn-assistant">✦ Assistant</button>
+        <div class="qui" id="qui"><span class="ini" id="qui-ini"></span><span class="nom" id="qui-nom"></span>
+          <button id="btn-sortir" title="Se déconnecter">Déconnexion</button></div>
       </div>
     </header>
     <main id="vue"></main>

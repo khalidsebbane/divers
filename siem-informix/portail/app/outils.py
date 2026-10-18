@@ -25,10 +25,10 @@ def main():
     a = p.parse_args()
     db.initialiser()
     if a.cmd == 'compte':
-        from .main import ajouter_compte
+        from .auth import ajouter_compte
         mdp = getpass.getpass('Mot de passe pour %s : ' % a.login)
-        if len(mdp) < 10:
-            raise SystemExit('Mot de passe trop court (10 caractères minimum).')
+        if len(mdp) < 12:
+            raise SystemExit('Mot de passe trop court (12 caractères minimum).')
         ajouter_compte(a.login, mdp, a.role)
         print('Compte %s (%s) enregistré.' % (a.login, a.role))
     elif a.cmd == 'importer':

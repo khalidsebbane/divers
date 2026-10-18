@@ -1,121 +1,133 @@
-# SIEM Informix : traçabilité système, base et applicatif
+# Portail SIEM Informix
 
-Portail qui **centralise et affiche les événements d'un serveur de base de données Informix** (Red Hat),
-pour répondre à la question : **qui a fait quoi, quand et depuis où**, y compris quand un compte
-administrateur partagé (ex. `regix`) est utilisé par plusieurs collaborateurs.
+Portail de **traçabilité des accès et des opérations** sur les serveurs de base de données Informix (Red Hat).
+Il répond à la question : **qui a fait quoi, quand et depuis où**, y compris quand un compte administrateur partagé
+(ex. `regix`) est utilisé par plusieurs collaborateurs.
+
+- **Hébergé sur un serveur isolé** : rien n'est installé en service sur le serveur de base ;
+- **Connexion par Active Directory** (groupes AD → rôles), avec un **administrateur local de secours** ;
+- **Collecte automatique** toutes les minutes, alertes par e-mail, aux couleurs du client.
+
+![Connexion](docs/captures/connexion.png)
 
 ![Tableau de bord](docs/captures/tableau-de-bord.png)
 
-## Ce que fait le portail
+## Architecture
+
+```
+                     Postes des administrateurs / RSSI (navigateur, HTTPS)
+                                        │  Connexion AD (LDAPS) ou compte local de secours
+                                        ▼
+ ┌──────────────────────── Serveur SIEM isolé (VM dédiée, RHEL ou Docker) ───────────────────────┐
+ │  Portail web (FastAPI, HTTPS)  ·  Base d'événements (SQLite)  ·  Planificateur  ·  Alertes      │
+ │  Assistant (questions proposées, IA facultative)  ·  Journal d'audit du portail                 │
+ └───────────────┬───────────────────────────────────────────────────────┬────────────────────────┘
+                 │ SSH sortant, toutes les minutes                         │ LDAPS 636     SMTP 587
+                 │ clé ed25519 à COMMANDE FORCÉE                           ▼               ▼
+                 ▼                                                   Contrôleurs AD   Messagerie
+ ┌──────── Serveur Informix (srv-fr2-107) ────────┐
+ │ compte « siemcollect » : ne peut lancer QUE    │   Aucun service ajouté, aucun port ouvert.
+ │ sudo platform-python collecteur.py --distant   │   Python système (RHEL 8), rien à installer.
+ │ → lit wtmp, btmp, secure, audit.log,            │   La configuration et l'état restent sur le
+ │   sysmaster, onshowaudit, table agr_lds         │   portail : rien n'est écrit sur le serveur.
+ └────────────────────────────────────────────────┘
+```
+
+Pourquoi ce modèle « piloté » plutôt qu'un agent :
+- **Le serveur de base reste intact.** Il n'y a ni service, ni port d'écoute, ni dépendance ajoutés ; la désinstallation se fait en une commande.
+- **La clé du portail ne donne aucun shell.** L'option `command=` d'`authorized_keys` force le lancement du collecteur, et `sudo` n'autorise que lui. Les options `from=`, `no-pty` et `no-port-forwarding` complètent le verrouillage.
+- **Les traces sont copiées hors du serveur toutes les minutes.** Quelqu'un qui utilise regix ne peut pas effacer ce qui a déjà été collecté.
+
+Un mode « poussé » reste disponible (collecteur lancé par cron et envoyant en HTTPS) pour les réseaux où le portail ne peut pas joindre le serveur.
+
+## Fonctions
 
 | Écran | Contenu |
 |---|---|
-| **Tableau de bord** | Indicateurs (événements, connexions, comptes partagés, opérations sensibles, alertes), activité par jour et par volet, dernières utilisations des comptes partagés, personnes et IP les plus actives |
-| **Utilisateurs** | Liste des personnes et comptes vus, avec volumes par volet, IP, jours actifs |
-| **Fiche utilisateur** | Chronologie complète mélangeant système, base et applicatif ; onglets Système / Base / Applicatif ; **sessions** (heure de connexion, de déconnexion, durée, IP, poste) ; adresses IP ; habitudes (carte jour × heure, programmes lancés) ; alertes ; export CSV |
-| **Recherche** | Filtres texte, personne, compte, IP, volet, échecs ; export CSV pour Excel |
-| **Alertes** | Règles automatiques, gravité, suivi (ouverte, en cours, close avec justification) |
-| **Postes** | Affectation IP → personne, pour attribuer les actions d'un compte partagé |
-| **Assistant** | Chatbot avec **questions proposées** (contextuelles à l'utilisateur affiché) et questions libres (IA, optionnelle) |
+| **Tableau de bord** | État de la collecte de chaque serveur, indicateurs, activité par jour (système, base, applicatif), comptes partagés, alertes, personnes et IP les plus actives |
+| **Utilisateurs → fiche** | Chronologie complète ; sessions (connexion, déconnexion, durée, IP, poste) ; adresses IP ; habitudes (carte jour × heure, programmes) ; alertes ; export CSV |
+| **Recherche** | Filtres texte, personne, compte, IP, volet, échecs ; export CSV (Excel) |
+| **Alertes** | Règles automatiques, gravité, suivi et clôture justifiée, envoi par e-mail des alertes hautes et critiques |
+| **Assistant** | Questions proposées selon le contexte (sans IA, aucune donnée envoyée) ; questions libres par IA, facultatives |
+| **Administration** | Serveurs collectés (ajout, test, collecte immédiate, reprise d'historique), affectation des postes, comptes locaux de secours, journal d'audit du portail, paramètres |
 
 ![Fiche utilisateur et assistant](docs/captures/fiche-utilisateur-assistant.png)
 
-### Les trois volets
+### Attribution : qui a vraiment agi ?
 
-| Volet | Sources | Exemples d'événements |
-|---|---|---|
-| **Système** | `wtmp`, `btmp`, `/var/log/secure`, `auditd` | connexions SSH/console, échecs, `sudo`, `su`, commandes Informix (`onmode`, `ontape`, `dbaccess`...), modification de `onconfig`, `sudoers`, comptes |
-| **Base** | audit Informix (`onaudit` / `onshowaudit`), `sysmaster:syssessions` | sessions base (machine cliente, heure), CREATE/DROP/ALTER, GRANT/REVOKE, suppressions de lignes sur tables sensibles |
-| **Applicatif** | table des programmes lancés (`agr_lds`, fournie par le DBA) | programme lancé, utilisateur applicatif, poste, heure (traitements `Xp_cron*` exclus) |
-
-### Qui a vraiment agi ? (attribution)
-
-Chaque événement est rattaché à une **personne**, avec un niveau d'attribution affiché partout :
-
-- **certaine** : la source donne l'identité. Cas d'un compte nominatif SSH, de l'utilisateur applicatif dans `agr_lds`, ou de l'utilisateur d'origine d'un `sudo`/`su` (champ `auid` d'auditd, conservé même après changement de compte) ;
-- **probable** : un compte partagé utilisé depuis un poste affecté à une personne (écran *Postes*) ;
-- **non identifiée** : un compte partagé utilisé depuis un poste inconnu. Une alerte est levée.
-
-> Le portail rend l'usage de `regix` **visible**, mais seule la fin du partage rend chaque action **attribuable
-> avec certitude**. Pour cela : comptes nominatifs, connexion avec un compte personnel puis `sudo -u informix`,
-> et le mot de passe de regix changé et gardé dans un coffre. Voir [docs/installation.md](docs/installation.md#mesures-sur-les-comptes).
+| Niveau | Cas |
+|---|---|
+| **certaine** | Compte nominatif, utilisateur applicatif de `agr_lds`, ou utilisateur d'origine d'un `sudo`/`su` (`auid` d'auditd) |
+| **probable** | Compte partagé utilisé depuis un poste affecté à une personne (écran *Postes*) |
+| **non identifiée** | Compte partagé utilisé depuis un poste inconnu : une alerte est levée |
 
 ### Règles d'alerte
 
 | Règle | Gravité |
 |---|---|
-| Compte partagé utilisé en direct (SSH), depuis un poste non affecté, ou hors heures ouvrées | moyenne → haute |
-| Opération sensible en base : DROP, ALTER, GRANT, REVOKE… | moyenne → **critique** si suppression la nuit |
-| Modification de `onconfig`/`sqlhosts`, `sudoers`, `/etc/passwd`, `/etc/shadow` | haute |
-| Échecs de connexion répétés depuis une même IP (5 en 10 min) | haute |
-| Nouvelle adresse IP pour une personne déjà connue | moyenne |
+| Compte partagé utilisé en direct, depuis un poste non affecté ou hors heures ouvrées | moyenne → haute |
+| DROP / ALTER / GRANT / REVOKE en base | moyenne → **critique** (suppression la nuit) |
+| Modification de `onconfig`, `sqlhosts`, `sudoers`, `/etc/passwd`, `/etc/shadow` | haute |
+| 5 échecs de connexion en 10 minutes depuis une même IP | haute |
+| Nouvelle adresse IP pour une personne connue | moyenne |
 | Connexion hors heures ouvrées | faible |
 
-## L'assistant (chatbot)
+## Sécurité du portail
 
-- **Questions proposées** : par exemple « Qui a utilisé le compte regix ces 7 derniers jours ? », « Qu'a fait kbenali hier ? », « Quelles sont les dernières sessions de… (heures de connexion et durée) ? », « Que s'est-il passé autour de l'alerte n°12 ? ».
-  - Elles s'adaptent à l'utilisateur affiché et aux alertes graves en cours, et de nouvelles questions sont proposées après chaque réponse.
-  - Chacune correspond à une requête précise : la réponse est **exacte, immédiate, sans IA, et aucune donnée ne sort du serveur**.
-- **Questions libres** (optionnel) : elles sont traitées par Claude (API Anthropic, modèle `claude-opus-5-5`).
-  - Claude interroge la base uniquement via des outils en **lecture seule** : recherche d'événements, profil d'une personne, alertes, et requêtes SQL `SELECT` contrôlées. Le journal du portail lui reste inaccessible.
-  - La réponse se termine par 3 questions de suivi.
-  - Sans clé API, une question libre est rapprochée de la question proposée la plus proche.
-  - ⚠️ En mode IA, **les extraits d'événements utiles à la réponse sont envoyés à l'API Anthropic**. À valider avec le client (données personnelles, RGPD) avant d'activer `SIEM_ASSISTANT_IA`.
+- **Accès** :
+  - **Active Directory** : LDAPS avec vérification du certificat. Le rôle vient de l'appartenance (même indirecte) à `GG_SIEM_Administrateurs` ou `GG_SIEM_Lecteurs`. Un compte désactivé ou hors groupe est refusé.
+  - **Comptes locaux de secours** : empreintes PBKDF2-SHA256. Le dernier administrateur local ne peut pas être supprimé.
+- **Sessions** : jeton aléatoire côté serveur, cookie `HttpOnly` / `Secure` / `SameSite=Strict`. Durée maximale 8 h, déconnexion après 30 min d'inactivité. Verrouillage après 5 échecs.
+- **Protection du navigateur** : CSP stricte, protection CSRF, anti-iframe, aucune ressource externe. Le portail fonctionne sans Internet.
+- **Journal d'audit** : toutes les connexions, consultations de fiches, exports, questions posées à l'assistant et actions d'administration sont tracés.
 
-Les questions posées à l'assistant et les consultations de fiches et d'exports sont elles-mêmes tracées (table `journal_portail`).
+Détails pour le RSSI : **[docs/securite.md](docs/securite.md)**.
 
-## Architecture
+## Installation
 
-```
-Serveur Informix (RHEL)                                     VM / conteneur portail
-┌──────────────────────────────────┐                     ┌───────────────────────────────┐
-│ wtmp, btmp, secure, audit.log ─┐ │                     │ API FastAPI  ─ ingestion       │
-│ onshowaudit (audit Informix) ──┼─┤  collecteur.py      │              ─ alertes         │
-│ sysmaster:syssessions ─────────┤ ├─ HTTPS + jeton ───► │ SQLite (événements, alertes)  │──► navigateur
-│ table agr_lds (programmes) ────┘ │  toutes les minutes │ Interface web + assistant     │     (HTTPS, comptes)
-│ Python 3.6 interne, rien à       │  (mise en attente   │ Claude (optionnel)            │
-│ installer                        │   si portail absent)│                               │
-└──────────────────────────────────┘                     └───────────────────────────────┘
-```
-
-- **Collecteur** ([collecteur/](collecteur/)) :
-  - un seul fichier Python, bibliothèque standard uniquement. Il tourne avec `/usr/libexec/platform-python` de RHEL 8, **sans rien installer** (l'abonnement Red Hat du serveur a expiré) ;
-  - il reprend là où il s'était arrêté, met les événements en attente si le portail est injoignable, et le portail ignore les doublons.
-- **Portail** ([portail/](portail/)) :
-  - FastAPI + SQLite, interface web sans dépendance externe (fonctionne sans Internet), thème clair et sombre, utilisable sur mobile ;
-  - les journaux sont copiés **hors du serveur** dès leur collecte : un administrateur qui utilise regix ne peut pas effacer ses traces côté portail.
-
-## Démarrage rapide (démonstration)
+Guide complet : **[docs/installation.md](docs/installation.md)**.
 
 ```bash
-cd portail
-pip install -r requirements.txt
-export SIEM_BASE=./donnees/siem.db SIEM_JETON_COLLECTEUR=$(openssl rand -hex 32)
-python -m app.outils demo                 # données fictives sur 45 jours
-python -m app.outils compte admin         # choisir le mot de passe
-uvicorn app.main:app --port 8443          # puis http://localhost:8443
+# 1. Serveur SIEM isolé (RHEL 8/9) : paquet hors ligne préparé sur un poste connecté
+./deploiement/construire-paquet-hors-ligne.sh 3.11        # sur un poste avec Internet
+tar xzf siem-portail-hors-ligne.tar.gz && cd siem-portail  # sur le serveur SIEM
+./deploiement/installer-portail.sh                         # en root : service, HTTPS, pare-feu
+#    ou avec Docker : cd portail && docker compose up -d
+
+# 2. Serveur Informix : une commande, avec la clé affichée dans Administration > Collecte
+./collecteur/preparer-serveur-bdd.sh --cle "ssh-ed25519 AAAA..." --ip-portail 10.20.0.15 --auditd
+
+# 3. Portail : Administration > Collecte > Ajouter un serveur > Tester > Collecter
 ```
 
-Installation réelle (serveur Informix + portail) : **[docs/installation.md](docs/installation.md)**.
-Activation de l'audit Informix : **[docs/informix-audit.md](docs/informix-audit.md)**.
+## Démonstration sur un poste
+
+```bash
+cd portail && pip install -r requirements.txt
+export SIEM_BASE=./donnees/siem.db SIEM_COOKIE_SECURISE=non SIEM_MARQUE_NOM="Tractafric Equipment" \
+       SIEM_MARQUE_COULEUR="#FFC50C" SIEM_MARQUE_LOGO=../deploiement/tractafric/logo.png
+python -m app.outils demo && python -m app.outils compte admin.local
+uvicorn app.main:app --port 8443        # http://localhost:8443
+```
 
 ## Tests
 
 ```bash
-pip install pytest httpx fastapi anthropic
-python -m pytest tests
+pip install pytest httpx fastapi ldap3 anthropic && python -m pytest tests
 ```
 
 Les tests couvrent :
-- la lecture de chaque source (wtmp, secure, auditd, onshowaudit, détection des colonnes de `agr_lds`) ;
+- les sources (wtmp, secure, auditd, onshowaudit, requête `agr_lds` envoyée à `dbaccess`) ;
 - l'ingestion, l'attribution et les alertes ;
-- l'API et les droits ;
-- les questions proposées et le verrouillage SQL en lecture seule ;
-- la boucle d'outils de l'assistant IA, avec un faux client Claude.
+- la connexion AD (annuaire simulé : groupes, compte désactivé, compte hors groupe, AD indisponible) ;
+- les comptes locaux, le verrouillage, la CSRF et la marque ;
+- la collecte pilotée de bout en bout et l'assistant (faux client Claude).
 
-## Points à valider sur le serveur réel
+La collecte par SSH à commande forcée a aussi été validée de bout en bout avec un vrai démon SSH et `sudo`. Le test a confirmé qu'une commande arbitraire envoyée avec la clé du portail est remplacée par le collecteur.
 
-1. **Colonnes de `agr_lds`** : elles sont détectées automatiquement (`syscolumns`). Les forcer dans `collecteur.ini` si besoin, puis vérifier avec `--test`.
-2. **Format exact de `onshowaudit`** : il dépend de la version d'Informix. Les positions des champs sont réglables dans `collecteur.ini` ; à valider sur un extrait réel ([docs/informix-audit.md](docs/informix-audit.md)).
-3. **Chemins `INFORMIXDIR` et uid du compte informix** dans les règles auditd.
-4. **Volume** : l'audit de toutes les lectures pèse sur les performances. Il faut cibler les tables sensibles.
+## À valider sur l'environnement réel
+
+1. **Colonnes de `agr_lds`** : elles sont détectées automatiquement. À vérifier avec « Tester », puis une collecte.
+2. **Format de `onshowaudit`** : il dépend de la version d'Informix. Les positions des champs sont réglables ([docs/informix-audit.md](docs/informix-audit.md)).
+3. **Droits base** : le collecteur lance `dbaccess` en root. Pour les sessions et `agr_lds`, il faut `GRANT CONNECT TO root` dans la base, ou un compte dédié.
+4. **Flux réseau à ouvrir** : SIEM → Informix (SSH 22), SIEM → contrôleurs AD (636), SIEM → SMTP, postes → SIEM (443).

@@ -1,3 +1,4 @@
 fastapi>=0.110
 uvicorn[standard]>=0.29
+ldap3>=2.9
 anthropic>=1.0

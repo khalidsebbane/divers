@@ -47,8 +47,29 @@ CREATE INDEX IF NOT EXISTS ix_al_ts ON alertes(ts);
 -- Affectation des postes : permet d'attribuer à une personne les actions d'un compte partagé
 CREATE TABLE IF NOT EXISTS postes (ip TEXT PRIMARY KEY, personne TEXT NOT NULL, libelle TEXT);
 
--- Traçabilité du portail lui-même (qui a consulté quoi, questions posées à l'assistant)
+-- Traçabilité du portail lui-même (connexions, consultations, exports, questions à l'assistant, administration)
 CREATE TABLE IF NOT EXISTS journal_portail (id INTEGER PRIMARY KEY, ts TEXT, login TEXT, action TEXT, details TEXT);
+CREATE INDEX IF NOT EXISTS ix_jp_ts ON journal_portail(ts);
+
+-- Sessions du portail (seule l'empreinte du jeton est stockée)
+CREATE TABLE IF NOT EXISTS sessions_portail (jeton TEXT PRIMARY KEY, login TEXT, role TEXT, source TEXT, nom TEXT,
+    cree TEXT, vu TEXT, ip TEXT);
+
+-- Serveurs collectés par le portail (collecte pilotée par SSH)
+CREATE TABLE IF NOT EXISTS sources_collecte (
+    id INTEGER PRIMARY KEY, nom TEXT NOT NULL, hote TEXT NOT NULL, port INTEGER DEFAULT 22,
+    utilisateur TEXT DEFAULT 'siemcollect', mode TEXT DEFAULT 'ssh',            -- ssh | local
+    python TEXT DEFAULT '/usr/libexec/platform-python',
+    chemin_collecteur TEXT DEFAULT '/opt/siem-informix/collecteur.py',
+    intervalle_s INTEGER DEFAULT 60, actif INTEGER DEFAULT 1,
+    config TEXT DEFAULT '{}', etat TEXT DEFAULT '{}',
+    derniere_execution TEXT, statut TEXT, message TEXT, evenements_total INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS executions_collecte (
+    id INTEGER PRIMARY KEY, source_id INTEGER, debut TEXT, fin TEXT, duree_s REAL, recus INTEGER, nouveaux INTEGER,
+    alertes INTEGER, statut TEXT, message TEXT, rapport TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_exec ON executions_collecte(source_id, debut);
 """
 
 _verrou = threading.Lock()
@@ -68,6 +89,10 @@ def connexion(lecture_seule=False):
 def initialiser():
     with connexion() as cx:
         cx.executescript(SCHEMA)
+        # migrations simples des bases créées par une version précédente
+        colonnes = {r[1] for r in cx.execute('PRAGMA table_info(alertes)')}
+        if 'notifiee' not in colonnes:
+            cx.execute('ALTER TABLE alertes ADD COLUMN notifiee INTEGER DEFAULT 0')
 
 
 def lignes(cx, sql, params=()):
@@ -143,6 +168,15 @@ def purger():
     limite = (dt.datetime.now() - dt.timedelta(days=config.conservation_jours)).strftime('%Y-%m-%d')
     with _verrou, connexion() as cx:
         cx.execute('DELETE FROM evenements WHERE jour < ?', (limite,))
+        cx.execute('DELETE FROM executions_collecte WHERE debut < ?', (limite,))
+
+
+def journal(limite=500, texte=None):
+    with connexion() as cx:
+        if texte:
+            return lignes(cx, 'SELECT * FROM journal_portail WHERE login LIKE ? OR action LIKE ? OR details LIKE ?'
+                              ' ORDER BY id DESC LIMIT ?', ['%' + texte + '%'] * 3 + [limite])
+        return lignes(cx, 'SELECT * FROM journal_portail ORDER BY id DESC LIMIT ?', (limite,))
 
 
 def journaliser(login, action, details=''):

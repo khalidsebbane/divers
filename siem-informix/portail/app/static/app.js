@@ -34,7 +34,8 @@ const lienPersonne = p => p ? `<a href="#/utilisateur/${encodeURIComponent(p)}">
 const resultat = r => r === 'echec' ? '<span class="r-echec">Échec</span>' : 'Succès';
 
 async function api(chemin, options = {}) {
-  const rep = await fetch(chemin, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, ...options });
+  const rep = await fetch(chemin, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-SIEM': '1' }, ...options });
+  if (rep.status === 401 && !chemin.startsWith('/api/connexion')) { location.href = '/connexion'; throw new Error('Session expirée'); }
   if (!rep.ok) {
     let msg = rep.statusText;
     try { msg = (await rep.json()).detail || msg; } catch (e) { /* corps non JSON */ }
@@ -148,10 +149,22 @@ function chaleur(el, donnees) {
 // ---------------------------------------------------------------------------------------------
 const vues = {};
 
+const ETATS = { ok: 'À jour', partiel: 'Partiel', erreur: 'En erreur', retard: 'En retard', jamais: 'Jamais collecté', inactive: 'Désactivée', en_cours: 'En cours' };
+const etatSource = e => `<span class="etat e-${esc(e)}"><span class="puce"></span>${esc(ETATS[e] || e)}</span>`;
+const depuisQuand = ts => {
+  if (!ts) return '-';
+  const s = Math.round((Date.now() - new Date(ts).getTime()) / 1000);
+  return s < 90 ? `il y a ${s} s` : s < 5400 ? `il y a ${Math.round(s / 60)} min` : frDate(ts);
+};
+
 vues.tableau = async el => {
-  const d = await api('/api/tableau-de-bord?' + qs(per()));
+  const [d, sante] = await Promise.all([api('/api/tableau-de-bord?' + qs(per())), api('/api/collecte/sante').catch(() => [])]);
   const k = d.indicateurs;
-  el.innerHTML = `
+  const bandeauCollecte = sante.length ? `<div class="carte" style="margin-bottom:16px"><h2>Collecte des serveurs ${etat.moi.role === 'admin' ? '<a class="droite" href="#/collecte">Gérer</a>' : ''}</h2>${tableau(
+    [{ t: 'Serveur', f: r => `<b>${esc(r.nom)}</b> <span class="tres-discret">${esc(r.hote)}</span>` }, { t: 'État', f: r => etatSource(r.etat) },
+     { t: 'Dernière collecte', f: r => depuisQuand(r.derniere_execution) }, { t: 'Événements collectés', num: 1, f: r => nb(r.evenements_total) },
+     { t: 'Message', f: r => `<span class="tres-discret">${esc(r.message || '')}</span>` }], sante)}</div>` : '';
+  el.innerHTML = bandeauCollecte + `
   <div class="grille g-kpi">
     <div class="carte kpi"><div class="v">${nb(k.total)}</div><div class="l">Événements</div></div>
     <div class="carte kpi"><div class="v">${nb(k.personnes)}</div><div class="l">Personnes / comptes actifs</div></div>
@@ -341,6 +354,175 @@ vues.assistant = async el => {
   monterChat($('#page-chat'), null);
 };
 
+
+// ---------------------------------------------------------------------------------------------
+// Administration
+// ---------------------------------------------------------------------------------------------
+const SOURCES_COLLECTE = { wtmp: 'Connexions (wtmp)', btmp: 'Échecs (btmp)', secure: 'SSH, sudo, su (secure)', auditd: 'Commandes et fichiers (auditd)',
+  sessions: 'Sessions base (sysmaster)', onaudit: 'Audit Informix (onaudit)', applicatif: 'Programmes (agr_lds)' };
+
+function champ(id, libelle, valeur, opts = {}) {
+  return `<label class="${opts.large ? 'large' : ''}">${esc(libelle)}<input class="champ" id="${id}" value="${esc(valeur ?? '')}" ${opts.type ? `type="${opts.type}"` : ''} ${opts.ph ? `placeholder="${esc(opts.ph)}"` : ''}></label>`;
+}
+
+vues.collecte = async el => {
+  const [sources, cle] = await Promise.all([api('/api/admin/sources'), api('/api/admin/cle-ssh')]);
+  el.innerHTML = `
+  <div class="carte" style="margin-bottom:16px"><h2>Serveurs collectés <span class="n">${sources.length}</span>
+    <button class="bouton principal droite" id="c-ajout">+ Ajouter un serveur</button></h2>
+    ${tableau([{ t: 'Serveur', f: r => `<b>${esc(r.nom)}</b><div class="tres-discret">${esc(r.utilisateur)}@${esc(r.hote)}:${r.port} · ${r.mode === 'ssh' ? 'SSH' : 'local'}</div>` },
+      { t: 'État', f: r => etatSource(!r.actif ? 'inactive' : r.derniere_execution ? (r.statut || 'ok') : 'jamais') },
+      { t: 'Fréquence', f: r => `${Math.round(r.intervalle_s / 60) || 1} min` },
+      { t: 'Sources', f: r => esc((r.config.collecteur || {}).sources || '') },
+      { t: 'Dernière collecte', f: r => depuisQuand(r.derniere_execution) }, { t: 'Événements', num: 1, f: r => nb(r.evenements_total) },
+      { t: 'Message', f: r => `<span class="tres-discret">${esc(r.message || '')}</span>` },
+      { t: '', f: (r) => `<div class="actions"><button class="bouton" data-a="modifier" data-id="${r.id}">Modifier</button>
+         <button class="bouton" data-a="tester" data-id="${r.id}">Tester</button><button class="bouton" data-a="lancer" data-id="${r.id}">Collecter</button></div>` }],
+      sources, { vide: 'Aucun serveur déclaré. Ajoutez le serveur Informix à collecter.' })}
+    <div id="c-msg"></div></div>
+  <div id="c-form"></div>
+  <div class="carte"><h2>Clé SSH du portail</h2>
+    <p class="discret">Le portail se connecte aux serveurs avec cette clé, dans un compte dédié (<span class="mono">siemcollect</span>). Côté serveur, la clé est
+    limitée à une seule commande : le collecteur. Elle ne donne pas de shell. Le script <span class="mono">preparer-serveur-bdd.sh</span> installe tout.</p>
+    <div class="code">${esc(cle.publique || 'Clé non disponible : installer openssh-clients sur le serveur du portail.')}</div>
+    <div id="c-exec"></div></div>`;
+  const msg = (t, ok) => { $('#c-msg', el).innerHTML = `<div class="message ${ok ? 'ok' : 'ko'}">${esc(t)}</div>`; };
+  $('#c-ajout', el).addEventListener('click', () => formulaireSource(el, null));
+  el.querySelectorAll('button[data-a]').forEach(b => b.addEventListener('click', async () => {
+    const id = Number(b.dataset.id), src = sources.find(s => s.id === id);
+    if (b.dataset.a === 'modifier') return formulaireSource(el, src);
+    b.disabled = true;
+    try {
+      if (b.dataset.a === 'tester') { const r = await api(`/api/admin/sources/${id}/tester`, { method: 'POST', body: '{}' }); msg(r.message, r.ok); }
+      if (b.dataset.a === 'lancer') {
+        const depuis = prompt('Reprendre l\'historique depuis une date (AAAA-MM-JJ), ou laisser vide pour une collecte normale :', '');
+        if (depuis === null) { b.disabled = false; return; }
+        const r = await api(`/api/admin/sources/${id}/executer`, { method: 'POST', body: JSON.stringify({ depuis }) });
+        msg(r.message + ' Rafraîchissez la page dans quelques instants.', true);
+      }
+    } catch (e) { msg(e.message, false); }
+    b.disabled = false;
+  }));
+  const ex = await api('/api/admin/sources/' + (sources[0] ? sources[0].id : 0) + '/executions').catch(() => []);
+  if (ex.length) $('#c-exec', el).innerHTML = `<h2 style="margin-top:18px">Dernières collectes${sources[0] ? ' · ' + esc(sources[0].nom) : ''}</h2>` + tableau(
+    [{ t: 'Début', f: r => frDate(r.debut, 1) }, { t: 'Durée', num: 1, f: r => r.duree_s + ' s' }, { t: 'État', f: r => etatSource(r.statut) },
+     { t: 'Reçus', num: 1, k: 'recus' }, { t: 'Nouveaux', num: 1, k: 'nouveaux' }, { t: 'Alertes', num: 1, k: 'alertes' }, { t: 'Message', k: 'message' }], ex.slice(0, 15));
+};
+
+function formulaireSource(el, src) {
+  const c = (src && src.config) || {};
+  const g = (s, k, d = '') => ((c[s] || {})[k] ?? d);
+  const actives = (g('collecteur', 'sources', 'wtmp,btmp,secure,auditd,sessions,applicatif')).split(',');
+  const zone = $('#c-form', el);
+  zone.innerHTML = `<div class="carte" style="margin-bottom:16px"><h2>${src ? 'Modifier ' + esc(src.nom) : 'Nouveau serveur à collecter'}</h2>
+  <fieldset><legend>Connexion</legend><div class="formulaire">
+    ${champ('f-nom', 'Nom affiché', src ? src.nom : '', { ph: 'srv-fr2-107' })}${champ('f-hote', 'Adresse du serveur', src ? src.hote : '', { ph: '10.x.x.x ou nom DNS' })}
+    ${champ('f-port', 'Port SSH', src ? src.port : 22, { type: 'number' })}${champ('f-util', 'Compte de collecte', src ? src.utilisateur : 'siemcollect')}
+    <label>Mode<select class="champ" id="f-mode"><option value="ssh">SSH (serveur distant)</option><option value="local" ${src && src.mode === 'local' ? 'selected' : ''}>Local (même machine)</option></select></label>
+    ${champ('f-int', 'Fréquence (minutes)', src ? Math.max(1, Math.round(src.intervalle_s / 60)) : 1, { type: 'number' })}
+    ${champ('f-py', 'Python sur le serveur', src ? src.python : '/usr/libexec/platform-python')}${champ('f-chemin', 'Chemin du collecteur', src ? src.chemin_collecteur : '/opt/siem-informix/collecteur.py')}
+    <label>Actif<select class="champ" id="f-actif"><option value="1">Oui</option><option value="0" ${src && !src.actif ? 'selected' : ''}>Non (en pause)</option></select></label>
+  </div></fieldset>
+  <fieldset><legend>Sources</legend><div class="formulaire">${Object.entries(SOURCES_COLLECTE).map(([k, v]) =>
+    `<label style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" data-src="${k}" ${actives.includes(k) ? 'checked' : ''}> ${esc(v)}</label>`).join('')}
+    ${champ('f-hist', 'Historique repris au 1er passage (jours)', g('collecteur', 'historique_jours', '45'), { type: 'number' })}</div></fieldset>
+  <fieldset><legend>Informix</legend><div class="formulaire">
+    ${champ('f-ifxdir', 'INFORMIXDIR', g('informix', 'informixdir', '/opt/informix'))}${champ('f-ifxsrv', 'INFORMIXSERVER', g('informix', 'informixserver'))}
+    ${champ('f-onconf', 'ONCONFIG', g('informix', 'onconfig'))}${champ('f-audit', 'Commande onshowaudit', g('informix', 'commande_onshowaudit'), { ph: 'onshowaudit -n ol_prod' })}
+  </div></fieldset>
+  <fieldset><legend>Table applicative</legend><div class="formulaire">
+    ${champ('f-base', 'Base', g('applicatif', 'base'))}${champ('f-table', 'Table', g('applicatif', 'table', 'agr_lds'))}
+    ${champ('f-cdate', 'Colonne date', g('applicatif', 'colonne_date', 'alds_open'))}${champ('f-cuser', 'Colonne utilisateur (vide = auto)', g('applicatif', 'colonne_utilisateur'))}
+    ${champ('f-compte', 'Compte base de l\'application', g('applicatif', 'compte_base', 'regix'))}
+    ${champ('f-filtre', 'Filtre', g('applicatif', 'filtre', "(alds_complement IS NULL OR alds_complement NOT MATCHES 'Xp_cron*')"), { large: 1 })}
+  </div></fieldset>
+  <div id="f-ak"></div>
+  <div class="actions"><button class="bouton principal" id="f-ok">Enregistrer</button><button class="bouton" id="f-annuler">Annuler</button>
+    ${src ? '<button class="bouton" id="f-suppr" style="margin-left:auto">Supprimer</button>' : ''}<span id="f-msg"></span></div></div>`;
+  if (src) $('#f-ak', zone).innerHTML = `<p class="discret">Ligne à placer dans <span class="mono">~${esc(src.utilisateur)}/.ssh/authorized_keys</span> sur le serveur (remplacer IP_DU_PORTAIL) :</p><div class="code">${esc(src.authorized_keys)}</div>`;
+  zone.scrollIntoView({ behavior: 'smooth' });
+  const v = id => $('#' + id, zone).value.trim();
+  $('#f-annuler', zone).addEventListener('click', () => { zone.innerHTML = ''; });
+  if (src) $('#f-suppr', zone).addEventListener('click', async () => {
+    if (!confirm(`Supprimer la source ${src.nom} ? Les événements déjà collectés sont conservés.`)) return;
+    await api('/api/admin/sources/' + src.id, { method: 'DELETE' }); router();
+  });
+  $('#f-ok', zone).addEventListener('click', async () => {
+    const corps = {
+      nom: v('f-nom'), hote: v('f-hote'), port: Number(v('f-port')) || 22, utilisateur: v('f-util'), mode: v('f-mode'),
+      intervalle_s: Math.max(1, Number(v('f-int')) || 1) * 60, python: v('f-py'), chemin_collecteur: v('f-chemin'), actif: Number(v('f-actif')),
+      config: {
+        collecteur: { sources: [...zone.querySelectorAll('input[data-src]:checked')].map(i => i.dataset.src).join(','), historique_jours: v('f-hist') || '45' },
+        informix: { informixdir: v('f-ifxdir'), informixserver: v('f-ifxsrv'), onconfig: v('f-onconf'), commande_onshowaudit: v('f-audit') },
+        applicatif: { base: v('f-base'), table: v('f-table'), colonne_date: v('f-cdate'), colonne_utilisateur: v('f-cuser'), compte_base: v('f-compte'), filtre: v('f-filtre') },
+      },
+    };
+    try {
+      await api('/api/admin/sources' + (src ? '/' + src.id : ''), { method: src ? 'PUT' : 'POST', body: JSON.stringify(corps) });
+      router();
+    } catch (e) { $('#f-msg', zone).innerHTML = `<span class="r-echec">${esc(e.message)}</span>`; }
+  });
+}
+
+vues.comptes = async el => {
+  const comptes = await api('/api/admin/comptes');
+  el.innerHTML = `<div class="carte"><h2>Comptes locaux de secours</h2>
+    <p class="discret">Les utilisateurs se connectent normalement avec leur compte <b>Active Directory</b> ; leur rôle vient de leur groupe AD.
+    Les comptes locaux servent d'accès de secours si l'annuaire est indisponible. Gardez-en au moins un administrateur, avec un mot de passe stocké dans le coffre.</p>
+    ${tableau([{ t: 'Identifiant', f: r => `<b>${esc(r.login)}</b>` }, { t: 'Rôle', k: 'role' },
+      { t: '', f: r => `<button class="bouton" data-suppr="${esc(r.login)}">Supprimer</button>` }], comptes)}
+    <h2 style="margin-top:18px">Créer ou réinitialiser un compte</h2>
+    <div class="formulaire">${champ('l-login', 'Identifiant', '', { ph: 'admin.local' })}${champ('l-mdp', 'Mot de passe (12 caractères min.)', '', { type: 'password' })}
+    <label>Rôle<select class="champ" id="l-role"><option value="admin">Administrateur</option><option value="lecteur">Lecteur</option></select></label></div>
+    <div class="actions"><button class="bouton principal" id="l-ok">Enregistrer</button><span id="l-msg"></span></div></div>`;
+  $('#l-ok', el).addEventListener('click', async () => {
+    try {
+      await api('/api/admin/comptes', { method: 'POST', body: JSON.stringify({ login: $('#l-login').value, mot_de_passe: $('#l-mdp').value, role: $('#l-role').value }) });
+      router();
+    } catch (e) { $('#l-msg').innerHTML = `<span class="r-echec">${esc(e.message)}</span>`; }
+  });
+  el.querySelectorAll('button[data-suppr]').forEach(b => b.addEventListener('click', async () => {
+    if (!confirm('Supprimer le compte ' + b.dataset.suppr + ' ?')) return;
+    try { await api('/api/admin/comptes/' + encodeURIComponent(b.dataset.suppr), { method: 'DELETE' }); router(); } catch (e) { alert(e.message); }
+  }));
+};
+
+const ACTIONS_JOURNAL = { connexion: 'Connexion', deconnexion: 'Déconnexion', echec_connexion: 'Échec de connexion', connexion_bloquee: 'Connexion bloquée',
+  fiche: 'Consultation de fiche', export_csv: 'Export CSV', assistant: 'Question à l\'assistant', poste: 'Affectation de poste',
+  source_creee: 'Source créée', source_modifiee: 'Source modifiée', source_supprimee: 'Source supprimée', collecte_manuelle: 'Collecte manuelle',
+  compte_local: 'Compte local enregistré', compte_local_supprime: 'Compte local supprimé' };
+
+vues.journal = async el => {
+  el.innerHTML = `<div class="carte"><h2>Journal d'audit du portail</h2>
+    <p class="discret">Qui s'est connecté au portail, qui a consulté quelle fiche, exporté des données ou posé une question à l'assistant.</p>
+    <div class="filtres"><input class="champ" id="j-texte" placeholder="Filtrer (utilisateur, action, détail)..." style="flex:1"></div><div id="j-liste"></div></div>`;
+  const charger = async () => {
+    const rows = await api('/api/admin/journal?' + qs({ texte: $('#j-texte').value }));
+    $('#j-liste').innerHTML = tableau([{ t: 'Date', f: r => frDate(r.ts, 1) }, { t: 'Utilisateur', f: r => `<b>${esc(r.login)}</b>` },
+      { t: 'Action', f: r => (r.action || '').startsWith('echec') || r.action === 'connexion_bloquee' ? `<span class="r-echec">${esc(ACTIONS_JOURNAL[r.action] || r.action)}</span>` : esc(ACTIONS_JOURNAL[r.action] || r.action) },
+      { t: 'Détail', f: r => `<span class="tres-discret">${esc(r.details)}</span>` }], rows);
+  };
+  let t; $('#j-texte').addEventListener('input', () => { clearTimeout(t); t = setTimeout(charger, 250); });
+  await charger();
+};
+
+vues.parametres = async el => {
+  const p = await api('/api/admin/parametres');
+  const bloc = (titre, lignes) => `<div class="carte param"><h2>${esc(titre)}</h2><dl>${lignes.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')}</dl></div>`;
+  const oui = b => b ? '<span class="etat e-ok"><span class="puce"></span>Actif</span>' : '<span class="etat e-inactive"><span class="puce"></span>Inactif</span>';
+  const liste = l => (l && l.length) ? l.map(esc).join('<br>') : '<span class="discret">-</span>';
+  el.innerHTML = `<p class="discret">Ces paramètres sont définis dans le fichier de configuration du serveur (<span class="mono">.env</span>). Ils sont affichés ici en lecture seule ; les secrets ne sont jamais affichés.</p>
+  <div class="grille-param">
+    ${bloc('Active Directory', [['État', oui(p.ad.actif)], ['Contrôleurs', liste(p.ad.serveurs)], ['Base de recherche', esc(p.ad.base_dn || '-')],
+      ['Groupe administrateurs', esc(p.ad.groupe_admin || '-')], ['Groupe lecteurs', esc(p.ad.groupe_lecteur || '-')], ['Certificat vérifié', p.ad.certificat_verifie ? 'Oui' : '<span class="r-echec">Non</span>']])}
+    ${bloc('Sessions', [['Durée maximale', p.sessions.duree_h + ' h'], ['Déconnexion après inactivité', p.sessions.inactivite_min + ' min'], ['Verrouillage', esc(p.sessions.verrouillage)]])}
+    ${bloc('Notifications e-mail', [['État', oui(p.notifications.actives)], ['Serveur SMTP', esc(p.notifications.serveur || '-')], ['Destinataires', liste(p.notifications.destinataires)], ['Gravités envoyées', liste(p.notifications.gravites)]])}
+    ${bloc('Règles', [['Comptes partagés surveillés', liste(p.regles.comptes_partages)], ['Heures ouvrées', esc(p.regles.heures_ouvrees)], ['Seuil d\'échecs', p.regles.seuil_echecs + ' en 10 min'], ['Conservation', p.regles.conservation_jours + ' jours']])}
+    ${bloc('Collecte', [['Planificateur automatique', oui(p.collecte.planificateur)], ['Réception poussée (collecteurs autonomes)', oui(p.collecte.ingestion_push)]])}
+    ${bloc('Assistant', [['IA (questions libres)', oui(p.assistant.ia)], ['Modèle', esc(p.assistant.modele || '-')], ['Questions proposées', oui(true) + ' <span class="tres-discret">sans IA, aucune donnée envoyée</span>']])}
+  </div>`;
+};
+
 // ---------------------------------------------------------------------------------------------
 // Assistant (chat)
 // ---------------------------------------------------------------------------------------------
@@ -445,11 +627,13 @@ function calculerPeriode() {
   }
 }
 
-const TITRES = { tableau: 'Tableau de bord', utilisateurs: 'Utilisateurs', recherche: 'Recherche d\'événements', alertes: 'Alertes', postes: 'Postes', assistant: 'Assistant' };
+const TITRES = { tableau: 'Tableau de bord', utilisateurs: 'Utilisateurs', recherche: 'Recherche d\'événements', alertes: 'Alertes', postes: 'Affectation des postes',
+  assistant: 'Assistant', collecte: 'Collecte des serveurs', comptes: 'Comptes locaux', journal: 'Journal d\'audit', parametres: 'Paramètres' };
 
 async function router() {
   const [, nom = 'tableau', arg] = location.hash.split('/');
   const vue = vues[nom] ? nom : 'tableau';
+  if (['collecte', 'comptes', 'journal', 'parametres'].includes(vue) && etat.moi.role !== 'admin') { location.hash = '#/tableau'; return; }
   document.querySelectorAll('nav.menu a').forEach(a => a.classList.toggle('actif', a.dataset.vue === (vue === 'utilisateur' ? 'utilisateurs' : vue)));
   $('#titre').textContent = TITRES[vue] || '';
   $('#menu').classList.remove('ouvert');
@@ -462,7 +646,16 @@ async function router() {
 async function demarrer() {
   try { const t = localStorage.getItem('siem-theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) { /* stockage indisponible */ }
   etat.moi = await api('/api/moi');
-  $('#qui').textContent = `${etat.moi.login} (${etat.moi.role})`;
+  const m = etat.moi.marque;
+  document.title = m.nom;
+  $('#marque-nom').textContent = m.nom;
+  $('#marque-st').textContent = m.sous_titre;
+  if (m.logo) { $('#logo').src = m.logo; $('#logo').alt = m.nom; $('#logo').hidden = false; $('#marque-nom').hidden = true; }
+  $('#version').textContent = `Portail SIEM v${m.version}`;
+  $('#qui-ini').textContent = (etat.moi.nom || etat.moi.login).split(/[ ._-]/).filter(Boolean).slice(0, 2).map(x => x[0]).join('');
+  $('#qui-nom').innerHTML = `${esc(etat.moi.nom || etat.moi.login)}<small>${etat.moi.role === 'admin' ? 'Administrateur' : 'Lecteur'} · ${etat.moi.source === 'ad' ? 'Active Directory' : 'compte local'}</small>`;
+  document.querySelectorAll('.admin-seul').forEach(x => { x.hidden = etat.moi.role !== 'admin'; });
+  $('#btn-sortir').addEventListener('click', async () => { await api('/api/deconnexion', { method: 'POST', body: '{}' }).catch(() => {}); location.href = '/connexion'; });
   calculerPeriode();
   ['#periode', '#debut', '#fin'].forEach(s => $(s).addEventListener('change', () => { calculerPeriode(); router(); }));
   $('#btn-assistant').addEventListener('click', () => {

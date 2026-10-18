@@ -1,11 +1,16 @@
 services:
   portail:
     build: .
-    image: siem-informix-portail:1.0
+    image: siem-informix-portail:2.0
     restart: unless-stopped
     env_file: .env
     ports:
-      - "8443:8443"
+      - "443:8443"
     volumes:
-      - ./donnees:/donnees          # base d'événements + comptes du portail (à sauvegarder)
-      - ./certs:/certs:ro           # cert.pem + cle.pem
+      - ./donnees:/donnees            # base d'événements, comptes locaux, clé SSH du portail (à sauvegarder)
+      - ./certs:/certs:ro             # cert.pem + cle.pem de l'autorité interne (sinon autosigné)
+      - ./marque:/marque:ro           # logo du client
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]

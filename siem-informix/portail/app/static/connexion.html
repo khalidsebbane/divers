@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connexion - Portail SIEM</title>
+<link rel="icon" href="/marque/logo">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/marque.css">
+</head>
+<body>
+<div class="connexion">
+  <section class="vitrine">
+    <div>
+      <img id="logo" alt="" hidden>
+      <h1 id="titre">Portail de sécurité</h1>
+      <p id="sous-titre">Traçabilité des accès et des opérations sur les serveurs de base de données.</p>
+      <ul>
+        <li>Connexions, sessions et adresses IP par utilisateur</li>
+        <li>Opérations sensibles en base et programmes applicatifs</li>
+        <li>Alertes automatiques et assistant d'analyse</li>
+      </ul>
+    </div>
+    <div class="bas">Accès réservé aux personnes autorisées. Toutes les connexions et consultations sont journalisées.</div>
+  </section>
+  <form id="form" autocomplete="on">
+    <h2>Connexion</h2>
+    <div class="aide" id="mode"></div>
+    <label>Identifiant<input id="login" name="username" autocomplete="username" required autofocus></label>
+    <label>Mot de passe<input id="mdp" name="password" type="password" autocomplete="current-password" required></label>
+    <div id="erreur" class="message ko" role="alert" hidden></div>
+    <button class="bouton principal" type="submit" id="valider">Se connecter</button>
+    <div class="aide">En cas d'indisponibilité de l'annuaire, utilisez le compte local de secours fourni par l'administrateur.</div>
+  </form>
+</div>
+<script src="/static/connexion.js"></script>
+</body>
+</html>

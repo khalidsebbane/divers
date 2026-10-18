@@ -12,7 +12,13 @@ Lit les sources suivantes, les met au format commun et les envoie au portail :
 Contraintes : Python 3.6+ uniquement, bibliothèque standard seulement (fonctionne avec
 /usr/libexec/platform-python sur RHEL 8, sans rien installer).
 
+Deux modes de fonctionnement :
+  - piloté (recommandé) : le portail SIEM, sur un serveur isolé, déclenche la collecte par SSH avec une clé
+    à commande forcée (« --distant »). Rien ne tourne en permanence sur le serveur de base, aucun port ouvert.
+  - autonome : lancé par cron/systemd, il pousse les événements vers le portail en HTTPS.
+
 Usage :
+  /usr/libexec/platform-python collecteur.py --distant                     # mode piloté (appelé par le portail)
   /usr/libexec/platform-python collecteur.py -c collecteur.ini            # une passe (cron / timer)
   /usr/libexec/platform-python collecteur.py -c collecteur.ini --test     # affiche sans envoyer
   /usr/libexec/platform-python collecteur.py -c collecteur.ini --depuis 2026-09-01
@@ -647,12 +653,71 @@ SOURCES = [
 ]
 
 
+def collecter_tout(conf, etat, reprise=None):
+    """Exécute toutes les sources actives. Retourne (événements, nouveaux points de reprise, compte rendu)."""
+    defaut = dt.datetime.now() - dt.timedelta(days=int(conf.get('collecteur', 'historique_jours', fallback='35')))
+    tous, points, rapport = [], {}, []
+    actives = [s.strip() for s in conf.get('collecteur', 'sources', fallback='wtmp,btmp,secure,auditd').split(',') if s.strip()]
+    for nom, _section, fonction in SOURCES:
+        if nom not in actives:
+            continue
+        depuis = reprise or (dt.datetime.strptime(etat['points'][nom], '%Y-%m-%dT%H:%M:%S')
+                             if etat.get('points', {}).get(nom) else defaut)
+        try:
+            evts = fonction(conf, depuis)
+        except Exception as e:
+            log('source %s en erreur : %s' % (nom, e))
+            rapport.append({'source': nom, 'statut': 'erreur', 'message': str(e)[:500]})
+            continue
+        log('%-10s %5d événement(s) depuis %s' % (nom, len(evts), depuis.strftime('%Y-%m-%d %H:%M:%S')))
+        rapport.append({'source': nom, 'statut': 'ok', 'evenements': len(evts)})
+        tous.extend(evts)
+        if evts:
+            points[nom] = max(e['ts'] for e in evts)
+    if 'sessions' in actives:
+        try:
+            evts = collecter_sessions(conf, etat)
+            log('%-10s %5d événement(s)' % ('sessions', len(evts)))
+            rapport.append({'source': 'sessions', 'statut': 'ok', 'evenements': len(evts)})
+            tous.extend(evts)
+        except Exception as e:
+            log('source sessions en erreur : %s' % e)
+            rapport.append({'source': 'sessions', 'statut': 'erreur', 'message': str(e)[:500]})
+    tous.sort(key=lambda e: e['ts'])
+    return tous, points, rapport
+
+
+def mode_distant():
+    """Collecte pilotée par le portail via SSH (clé à commande forcée).
+
+    Entrée (stdin)  : {"config": {section: {clé: valeur}}, "etat": {...}, "depuis": "AAAA-MM-JJ" | null}
+    Sortie (stdout) : une ligne JSON par événement, puis une dernière ligne {"__fin__": {"etat": ..., "rapport": ...}}
+    Rien n'est écrit sur le serveur : la configuration et l'état sont conservés par le portail.
+    """
+    demande = json.loads(sys.stdin.read() or '{}')
+    conf = configparser.ConfigParser(interpolation=None)
+    conf.read_dict({s: {k: str(v) for k, v in vals.items()} for s, vals in (demande.get('config') or {}).items()})
+    etat = demande.get('etat') or {}
+    reprise = dt.datetime.strptime(demande['depuis'], '%Y-%m-%d') if demande.get('depuis') else None
+    evts, points, rapport = collecter_tout(conf, etat, reprise)
+    sortie = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    for e in evts:
+        sortie.write(json.dumps(e, ensure_ascii=False) + '\n')
+    etat.setdefault('points', {}).update(points)
+    sortie.write(json.dumps({'__fin__': {'etat': etat, 'rapport': rapport, 'serveur': SERVEUR, 'version': VERSION}},
+                            ensure_ascii=False) + '\n')
+    sortie.flush()
+
+
 def main():
+    if '--distant' in sys.argv[1:]:
+        return mode_distant()
     p = argparse.ArgumentParser(description='Collecteur SIEM Informix')
     p.add_argument('-c', '--config', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'collecteur.ini'))
     p.add_argument('--test', action='store_true', help='Affiche les événements sans les envoyer ni mettre à jour l\'état')
     p.add_argument('--depuis', help='Rejouer depuis une date AAAA-MM-JJ (reprise d\'historique)')
     p.add_argument('--sortie', help='Écrire les événements dans un fichier .jsonl au lieu de les envoyer')
+    p.add_argument('--distant', action='store_true', help='Mode piloté par le portail (stdin/stdout JSON)')
     args = p.parse_args()
 
     conf = configparser.ConfigParser(interpolation=None)
@@ -666,33 +731,8 @@ def main():
         with io.open(fichier_etat, encoding='utf-8') as f:
             etat = json.load(f)
     reprise = dt.datetime.strptime(args.depuis, '%Y-%m-%d') if args.depuis else None
-    defaut = dt.datetime.now() - dt.timedelta(days=int(conf.get('collecteur', 'historique_jours', fallback='35')))
+    tous, nouveaux_points, _rapport = collecter_tout(conf, etat, reprise)
 
-    tous, nouveaux_points = [], {}
-    actives = [s.strip() for s in conf.get('collecteur', 'sources', fallback='wtmp,btmp,secure,auditd').split(',') if s.strip()]
-    for nom, _section, fonction in SOURCES:
-        if nom not in actives:
-            continue
-        depuis = reprise or (dt.datetime.strptime(etat['points'][nom], '%Y-%m-%dT%H:%M:%S')
-                             if etat.get('points', {}).get(nom) else defaut)
-        try:
-            evts = fonction(conf, depuis)
-        except Exception as e:
-            log('source %s en erreur : %s' % (nom, e))
-            continue
-        log('%-10s %5d événement(s) depuis %s' % (nom, len(evts), depuis.strftime('%Y-%m-%d %H:%M:%S')))
-        tous.extend(evts)
-        if evts:
-            nouveaux_points[nom] = max(e['ts'] for e in evts)
-    if 'sessions' in actives:
-        try:
-            evts = collecter_sessions(conf, etat)
-            log('%-10s %5d événement(s)' % ('sessions', len(evts)))
-            tous.extend(evts)
-        except Exception as e:
-            log('source sessions en erreur : %s' % e)
-
-    tous.sort(key=lambda e: e['ts'])
     if args.test:
         for e in tous[-50:]:
             print(json.dumps(e, ensure_ascii=False))
