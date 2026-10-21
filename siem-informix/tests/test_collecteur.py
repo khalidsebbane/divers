@@ -121,3 +121,33 @@ def test_requete_agr_lds(tmp_path, monkeypatch):
     assert "FROM agr_lds WHERE alds_open >= '2026-09-01 00:00:00'" in sql
     assert "AND (alds_complement IS NULL OR alds_complement NOT MATCHES 'Xp_cron*') ORDER BY alds_open" in sql
     assert [(e['utilisateur'], e['compte'], e['objet']) for e in evts] == [('jdupont', 'regix', 'Xp_saisie_dossier')]
+
+
+def test_rapport_poste_correlation_terminal(tmp_path):
+    """Historique d'une IP : session depuis le poste, sudo pendant la session, programmes agr_lds du même terminal."""
+    import subprocess
+    D = dt.datetime
+    (tmp_path / 'wtmp').write_bytes(utmp(7, 'pts/3', 'jdupont', '10.12.4.21', '10.12.4.21', D(2026, 10, 6, 8, 30))
+                                    + utmp(7, 'pts/4', 'sbernard', '10.12.4.35', '10.12.4.35', D(2026, 10, 6, 8, 40))
+                                    + utmp(8, 'pts/3', '', '', '', D(2026, 10, 6, 12, 0)))
+    sec = tmp_path / 'secure'
+    sec.write_text('Oct  6 09:15:00 srv sudo[2]: jdupont : TTY=pts/3 ; PWD=/h ; USER=informix ; COMMAND=/opt/informix/bin/dbaccess prod -\n'
+                   'Oct  6 09:20:00 srv sudo[3]: sbernard : TTY=pts/4 ; PWD=/h ; USER=root ; COMMAND=/bin/ls\n')
+    os.utime(sec, (time.mktime(D(2026, 10, 20).timetuple()),) * 2)
+    (tmp_path / 'bin').mkdir()
+    faux = tmp_path / 'bin' / 'dbaccess'
+    faux.write_text('#!/bin/bash\nsql=$(cat); f=$(echo "$sql" | sed -n "s/^UNLOAD TO \'\\([^\']*\\)\'.*/\\1/p")\n'
+                    'if echo "$sql" | grep -q syscolumns; then printf "alds_id|\\nalds_user|\\nalds_open|\\nalds_complement|\\nalds_tty|\\n" > "$f";\n'
+                    'else printf "1|jdupont|2026-10-06 09:00:00|Xp_saisie|pts/3|\\n2|sbernard|2026-10-06 09:05:00|Xp_consult|pts/4|\\n" > "$f"; fi\n')
+    faux.chmod(0o755)
+    ini = tmp_path / 'c.ini'
+    ini.write_text('[systeme]\nwtmp = %s\nsecure = %s\nauditd = %s\n[informix]\ninformixdir = %s\n'
+                   '[applicatif]\nbase = prod\ntable = agr_lds\ncompte_base = regix\ncolonne_date = alds_open\n'
+                   % (tmp_path / 'wtmp', sec, tmp_path / 'absent', tmp_path))
+    script = os.path.join(os.path.dirname(__file__), '..', 'collecteur', 'rapport_poste.py')
+    subprocess.run([sys.executable, script, '--ip', '10.12.4.21', '--depuis', '2026-10-01', '--jusqua', '2026-10-21',
+                    '-c', str(ini), '-o', str(tmp_path / 'out')], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    csv_txt = next((tmp_path / 'out').glob('*.csv')).read_text(encoding='utf-8-sig')
+    assert 'Xp_saisie' in csv_txt and 'même terminal pts/3' in csv_txt
+    assert 'dbaccess prod' in csv_txt and 'pendant la session pts/3' in csv_txt
+    assert 'Xp_consult' not in csv_txt and 'sbernard' not in csv_txt      # autre poste : exclu
