@@ -424,6 +424,19 @@ def logs_logiques(d):
     return {'total': total, 'non_sauves': non_sauves}
 
 
+def bascules_logs(d):
+    """Nombre de logs logiques remplis par heure (uniqid du log courant, premier et dernier relevé)."""
+    pts = []
+    for ts, t in blocs(os.path.join(d, 'informix', 'onstat_l.raw')):
+        for l in t.splitlines():
+            p = l.split()
+            if len(p) >= 4 and re.match(r'^[0-9a-f]{6,}$', p[0]) and len(p[2]) == 7 and 'C' in p[2] and p[3].isdigit():
+                pts.append((ts, int(p[3])))
+    if len(pts) < 2 or (pts[-1][0] - pts[0][0]).total_seconds() < 1800:
+        return None
+    return (pts[-1][1] - pts[0][1]) * 3600.0 / (pts[-1][0] - pts[0][0]).total_seconds()
+
+
 def iof(d):
     b = blocs(os.path.join(d, 'informix', 'onstat_iof.raw'))
     t = b[-1][1] if b else lire(os.path.join(d, 'statique', 'informix', 'onstat__g_iof.txt'))
@@ -487,6 +500,15 @@ def journal_moteur(d, debut, fin):
             except ValueError:
                 pass
             continue
+        md2 = re.match(r'^(\d\d/\d\d/\d\d)\s+(\d\d:\d\d:\d\d)\s+(.*)$', l)   # MSG_DATE 1
+        if md2:
+            for f in ('%m/%d/%y', '%d/%m/%y'):
+                try:
+                    jour = dt.datetime.strptime(md2.group(1), f).date()
+                    break
+                except ValueError:
+                    pass
+            l = md2.group(2) + '  ' + md2.group(3)
         mh = re.match(r'^(\d\d:\d\d:\d\d)\s+(.*)$', l)
         if not mh:
             continue
@@ -530,6 +552,9 @@ def charger(d):
         s['fg'] = deltas(serie_simple(d, 'onstat_F.raw', f_fg), 'fg', par_min=True)
         s['entete'] = serie_simple(d, 'onstat_entete.raw', f_entete)
         s['ckp'], s['vp'], s['logs'], s['iof'] = checkpoints(d), vp_cpu(d), logs_logiques(d), iof(d)
+        s['logs_h'] = bascules_logs(d)
+        s['nb_chunks'] = len([l for l in lire(os.path.join(d, 'statique', 'informix', 'onstat__d.txt')).splitlines()
+                              if re.match(r'^[0-9a-f]{6,}\s+\d+\s+\d+\s+\d+', l)])
         s['repl'], s['backlog'] = replication(d)
         s['conf'] = onconfig(d)
         s['journal'], ckp_log = journal_moteur(d, s['debut'], s['fin'])
@@ -748,13 +773,105 @@ def diagnostic(s):
         if cf.get('RESIDENT', '') in ('0', ''):
             add('info', 'Informix', 'Mémoire partagée non résidente', 'RESIDENT %s' % (cf.get('RESIDENT') or 'absent'),
                 'RESIDENT -1 empêche la mise en swap de la mémoire partagée (avec suffisamment de RAM).')
-        if cf.get('DIRECT_IO', '') in ('0', '') and any('(fichier)' in l for l in lire(os.path.join(s['dossier'], 'statique', 'informix', 'chunks_peripheriques.txt')).splitlines()):
-            add('info', 'Informix', 'Chunks en fichiers sans DIRECT_IO', 'DIRECT_IO %s' % (cf.get('DIRECT_IO') or 'absent'),
-                'Avec des chunks sur système de fichiers, DIRECT_IO 1 évite la double mise en cache (Informix + Linux).')
         if not cf.get('DBSPACETEMP'):
             add('info', 'Informix', 'Pas de DBSPACETEMP', 'DBSPACETEMP absent', 'Les tris et tables temporaires vont dans le rootdbs : définir des dbspaces temporaires dédiés.')
+        ram = s['mem'][-1]['total_mo'] if s['mem'] else 0
+        for g, t, pv, rec in revue_configuration(cf, ram, s['ncpu'], s.get('nb_chunks', 0), s.get('logs_h')):
+            add(g, 'Configuration', t, pv, rec)
     c.sort(key=lambda x: GRAV[x[0]][2])
     return c
+
+
+def kv_option(v, cle):
+    m = re.search(r'(?:^|,)\s*%s\s*=\s*([\w.]+)' % cle, v)
+    return m.group(1) if m else None
+
+
+def revue_configuration(cf, ram_mo, ncpu, nb_chunks=0, logs_h=None):
+    """Lecture experte de l'ONCONFIG au regard du serveur (RAM, cœurs). Retourne [(gravité, constat, preuve, recommandation)]."""
+    r = []
+    ent = lambda k, d=None: (lambda x: int(x) if re.match(r'^-?\d+$', x or '') else d)(str(cf.get(k, '')).strip().strip('"'))
+    # mémoire partagée
+    bp_mo = 0.0
+    for b in cf.get('BUFFERPOOL', []):
+        n, t = kv_option(b, 'buffers'), kv_option(b, 'size')
+        if n:
+            bp_mo += int(n) * int(re.sub(r'\D', '', t or '2') or 2) / 1024.0
+    virt_mo = (ent('SHMVIRTSIZE', 0) or 0) / 1024.0
+    if bp_mo:
+        txt = 'BUFFERPOOL %.1f Go + segment virtuel initial %.1f Go (SHMVIRTSIZE)%s' % (bp_mo / 1024, virt_mo / 1024, (' pour %.0f Go de RAM' % (ram_mo / 1024)) if ram_mo else '')
+        if ram_mo and bp_mo + virt_mo > 0.75 * ram_mo:
+            r.append(('haute' if bp_mo + virt_mo > 0.85 * ram_mo else 'moyenne', 'Mémoire partagée Informix proche de la RAM totale',
+                      txt + ' (%.0f %% de la RAM), RESIDENT %s' % (100.0 * (bp_mo + virt_mo) / ram_mo, cf.get('RESIDENT', '?')),
+                      'Avec RESIDENT -1 cette mémoire est verrouillée : il reste peu de place pour l\'OS, le cache de fichiers et les sessions '
+                      '(le segment virtuel grossit ensuite par pas de SHMADD). Surveiller le swap ; sinon réduire SHMVIRTSIZE ou ajouter de la RAM.'))
+        elif False:
+            r.append(('haute', 'Mémoire partagée Informix proche de la RAM totale', txt + ', RESIDENT %s' % cf.get('RESIDENT', '?'),
+                      'Avec RESIDENT -1 la mémoire est verrouillée : l\'OS et les autres processus sont poussés en swap. Réduire SHMVIRTSIZE ou le BUFFERPOOL, ou ajouter de la RAM.'))
+        else:
+            r.append(('info', 'Dimensionnement mémoire', txt, 'Cohérent si le taux de lecture en cache reste > 98 % (voir graphique Informix).'))
+    for b in cf.get('BUFFERPOOL', []):
+        mx = kv_option(b, 'lru_max_dirty')
+        if mx and float(mx) <= 5:
+            r.append(('info', 'Nettoyage des buffers très agressif', 'lru_min_dirty=%s, lru_max_dirty=%s, lrus=%s' % (kv_option(b, 'lru_min_dirty'), mx, kv_option(b, 'lrus')),
+                      'Les pages modifiées sont écrites en continu (écritures LRU) : checkpoints courts, mais charge d\'écriture permanente sur les disques. '
+                      'Si les disques sont saturés en écriture, remonter progressivement (ex. 10/20) en surveillant la durée des checkpoints.'))
+    # VP CPU et NET
+    cpu_vp = 0
+    for v in cf.get('VPCLASS', []):
+        if v.lower().startswith('cpu'):
+            cpu_vp = int(kv_option(v, 'num') or 0)
+    net_vp = sum(int(x.split(',')[1]) for x in cf.get('NETTYPE', []) if len(x.split(',')) >= 4 and x.split(',')[3].strip().upper() == 'NET' and x.split(',')[1].isdigit())
+    if cpu_vp and ncpu:
+        if cpu_vp >= ncpu:
+            r.append(('haute', 'Plus de VP CPU que de cœurs', 'VPCLASS cpu,num=%d pour %d CPU visibles, + %d VP réseau (NET)' % (cpu_vp, ncpu, net_vp),
+                      'Les VP CPU se disputent les cœurs avec les VP réseau, AIO et l\'OS : prévoir num ≤ cœurs - 1 (et ≤ cœurs - 2 si des processus IRIUM tournent sur ce serveur).'))
+        elif cpu_vp + net_vp > ncpu:
+            r.append(('moyenne', 'VP CPU + VP réseau supérieurs au nombre de cœurs', '%d VP CPU + %d VP NET pour %d CPU' % (cpu_vp, net_vp, ncpu),
+                      'Sous forte charge, les VP NET (NETTYPE …,NET) prennent du temps CPU aux VP CPU. Envisager les threads d\'écoute sur la classe CPU, ou moins de VP NET.'))
+        else:
+            r.append(('info', 'VP CPU', '%d VP CPU + %d VP NET pour %d CPU' % (cpu_vp, net_vp, ncpu), 'Cohérent ; confirmer avec l\'occupation des VP et la file des threads prêts.'))
+    ulc = str(cf.get('USELASTCOMMITTED', '')).strip('"').upper()
+    if ulc in ('NONE', '', '0'):
+        r.append(('moyenne', 'Lecture de la dernière version validée désactivée', 'USELASTCOMMITTED %s' % (cf.get('USELASTCOMMITTED') or 'absent'),
+                  'En COMMITTED READ, un lecteur attend la fin des transactions qui modifient les lignes (batchs ipscrond). « COMMITTED READ » réduit fortement '
+                  'ces attentes de verrous : à valider avec l\'éditeur IRIUM et à tester sur un environnement de recette.'))
+    scope, dri = str(cf.get('HDR_TXN_SCOPE', '')).upper(), cf.get('DRINTERVAL')
+    if scope in ('NEAR_SYNC', 'FULL_SYNC') or str(dri) == '-1':
+        r.append(('moyenne', 'Réplication HDR synchrone', 'HDR_TXN_SCOPE %s, DRINTERVAL %s, DRTIMEOUT %s' % (scope or '-', dri, cf.get('DRTIMEOUT', '-')),
+                  'Chaque validation attend la réplica (NEAR_SYNC : réception du log). La latence réseau principale ↔ réplica et la charge de la réplica s\'ajoutent '
+                  'à chaque COMMIT : mesurer le ping entre les deux serveurs et comparer avec le rapport de la réplica. ASYNC supprime cette attente au prix d\'un RPO non nul.'))
+    if str(cf.get('LTAPEDEV', '')).strip() == '/dev/null':
+        r.append(('moyenne', 'Logs logiques non sauvegardés', 'LTAPEDEV /dev/null',
+                  'Pas de restauration à un instant donné (perte des transactions depuis la dernière sauvegarde de niveau 0 en cas de sinistre). Sans effet sur les performances, '
+                  'mais à faire valider par le client (la réplica HDR ne protège pas d\'une erreur logique).'))
+    if (ent('LOGBUFF') or 0) and ent('LOGBUFF') < 256:
+        r.append(('info', 'Buffer du log logique petit', 'LOGBUFF %s Ko' % cf.get('LOGBUFF'), 'Valeur courante 256 à 1024 Ko sur un OLTP chargé, surtout avec HDR (moins de vidages et d\'envois).'))
+    if (ent('PHYSBUFF') or 0) and ent('PHYSBUFF') < 512:
+        r.append(('info', 'Buffer du log physique petit', 'PHYSBUFF %s Ko' % cf.get('PHYSBUFF'), 'Valeur courante 512 Ko et plus (défaut des versions récentes).'))
+    if logs_h:
+        r.append(('moyenne' if logs_h > 20 else 'info', 'Bascules de logs logiques', '%.0f logs remplis par heure (LOGSIZE %s Ko, %s logs)' % (logs_h, cf.get('LOGSIZE'), cf.get('LOGFILES')),
+                  'Au-delà d\'une vingtaine par heure, augmenter LOGSIZE (ex. 100 000 Ko) réduit le travail de bascule et les envois HDR associés.'))
+    elif (ent('LOGSIZE') or 0) and ent('LOGSIZE') < 50000:
+        r.append(('info', 'Logs logiques de petite taille', 'LOGSIZE %s Ko × %s logs' % (cf.get('LOGSIZE'), cf.get('LOGFILES')),
+                  'Vérifier le nombre de bascules par heure (supervision > 30 min) ; des logs de 50 à 100 Mo sont courants.'))
+    nonpdq = ent('DS_NONPDQ_QUERY_MEM')
+    if nonpdq is not None and nonpdq < 1024:
+        r.append(('info', 'Mémoire de tri par requête faible', 'DS_NONPDQ_QUERY_MEM %d Ko (PDQ désactivé : MAX_PDQPRIORITY %s)' % (nonpdq, cf.get('MAX_PDQPRIORITY', '-')),
+                  'Les tris et jointures par hachage débordent vite dans les dbspaces temporaires : comparer « tris » et « tris disque » (sysmaster). 2 à 8 Mo sont fréquents en OLTP.'))
+    if str(cf.get('OPTCOMPIND', '')) == '2':
+        r.append(('info', 'Optimiseur orienté coût global', 'OPTCOMPIND 2',
+                  'Autorise les jointures par hachage et balayages complets ; en OLTP, 0 favorise les index. À ne changer qu\'après analyse des plans des requêtes lentes.'))
+    dio = str(cf.get('DIRECT_IO', '')).strip()
+    if dio and dio not in ('0', '1'):
+        r.append(('info', 'Valeur DIRECT_IO inhabituelle', 'DIRECT_IO %s' % dio, 'Valeurs documentées : 0 ou 1. Vérifier dans le journal du moteur (et onstat -g cfg) la valeur réellement retenue.'))
+    cl = ent('CLEANERS')
+    if cl and nb_chunks and cl < nb_chunks:
+        r.append(('moyenne', 'Moins de CLEANERS que de chunks', 'CLEANERS %d pour %d chunks' % (cl, nb_chunks), 'Un thread de nettoyage par chunk actif est la règle usuelle.'))
+    if str(cf.get('RTO_SERVER_RESTART', '')) == '0':
+        r.append(('info', 'Checkpoints à intervalle fixe', 'RTO_SERVER_RESTART 0, CKPTINTVL %s s' % cf.get('CKPTINTVL', '?'),
+                  'Les checkpoints sont déclenchés toutes les CKPTINTVL secondes (ou par le log physique) : surveiller leur durée et les blocages.'))
+    return r
 
 
 def correlation(a, b):
@@ -918,7 +1035,11 @@ PARAMS = [
     ('STACKSIZE', 'Pile des threads (Ko)'), ('VP_MEMORY_CACHE_KB', 'Cache mémoire par VP CPU'), ('USELASTCOMMITTED', 'Lecture de la dernière version validée (moins d\'attentes de verrous)'),
     ('DRINTERVAL', 'HDR : intervalle de vidage (-1 = synchrone)'), ('HDR_TXN_SCOPE', 'HDR : portée de la synchronisation des validations'),
     ('DRTIMEOUT', 'HDR : délai avant de considérer la réplica perdue'), ('LOG_INDEX_BUILDS', 'Journalisation des créations d\'index (RSS)'),
-    ('AUTO_STAT_MODE', 'Mise à jour automatique des statistiques'), ('SQLTRACE', 'Traçage SQL (coût en mémoire)'), ('MSGPATH', 'Journal du moteur'),
+    ('AUTO_STAT_MODE', 'Mise à jour automatique des statistiques'), ('AUTO_TUNE', 'Réglages automatiques (checkpoints, LRU, AIO)'),
+    ('PHYSFILE', 'Taille du log physique (Ko)'), ('LTAPEDEV', 'Sauvegarde des logs logiques (/dev/null = aucune)'),
+    ('DS_NONPDQ_QUERY_MEM', 'Mémoire de tri par requête hors PDQ (Ko)'), ('STMT_CACHE', 'Cache des instructions SQL'),
+    ('BTSCANNER', 'Nettoyage des index (B-tree scanner)'), ('DD_HASHSIZE', 'Cache du dictionnaire de données'),
+    ('TXTIMEOUT', 'Délai des transactions distribuées'), ('DEADLOCK_TIMEOUT', 'Délai de détection des interblocages distribués'), ('SQLTRACE', 'Traçage SQL (coût en mémoire)'), ('MSGPATH', 'Journal du moteur'),
 ]
 
 

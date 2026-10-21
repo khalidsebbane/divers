@@ -9,6 +9,22 @@ Boîte à outils pour **identifier la source des lenteurs** sur l'infrastructure
 
 ![Exemple de diagnostic (données simulées)](docs/exemple-diagnostic.png)
 
+## Environnement Scania (relevé le 21/10/2026)
+
+| Serveur | Rôle | Commande de supervision |
+|---|---|---|
+| `x0296se` | Base principale Informix `ol_x0296se` (`INFORMIXDIR=/opt/irium/informix`) | `./audit-irium.sh supervision --debut 07:30 --duree 5h --intervalle 30` |
+| `x0297se` | Réplica HDR probable (`ol_x0297se`) | idem |
+| serveurs d'applications IRIUM | Applications | idem `--bdd-hote x0296se --bdd-port sqlexec` |
+| serveur ipscrond | Tâches d'arrière-plan | idem `--bdd-hote x0296se --bdd-port sqlexec` |
+
+L'environnement Informix est lu dans le profil du compte `informix` : `ONCONFIG=onconfig.ol_x0296se`, `INFORMIXSQLHOSTS=…/sqlhosts.ol_x0296se`. Le journal du moteur `$INFORMIXDIR/tmp/online.log` est au format daté (`MSG_DATE 1`), ce que le script et le rapport gèrent.
+
+**Lecture préliminaire de l'ONCONFIG** : [docs/analyse-configuration-x0296se.md](docs/analyse-configuration-x0296se.md). Trois pistes sont prioritaires :
+- `USELASTCOMMITTED "NONE"` : les lecteurs attendent les écritures en cours ;
+- la réplication HDR synchrone (`NEAR_SYNC`) : chaque validation attend x0297se ;
+- 11 VP CPU + 6 VP réseau, à rapprocher du nombre de cœurs.
+
 ## Ce qui est collecté
 
 | Domaine | Contenu |

@@ -10,7 +10,7 @@
 #   ./audit-irium.sh supervision --duree 4h [--intervalle 30]      supervision d'une matinée (en arrière-plan)
 #        [--debut 07:30]            attendre cette heure avant de commencer
 #        [--bdd-hote srv-bdd]       (serveurs apps / batch) mesurer la latence vers la base
-#        [--bdd-port 9088]          port du listener Informix (sqlhosts)
+#        [--bdd-port 9088|sqlexec]  port ou service du listener Informix (sqlhosts)
 #        [--motifs 'ipscrond|fglrun|...']  processus IRIUM à suivre
 #        [--sortie /var/tmp/scania-fr]     dossier de sortie
 #        [--sans-sql]               ne pas interroger sysmaster par SQL
@@ -60,7 +60,7 @@ charger_informix() {
     while IFS= read -r l; do [ -n "$l" ] && export "${l?}"; done <<< "$e"
   fi
   if [ -z "${INFORMIXDIR:-}" ]; then
-    for d in /opt/informix /informix /usr/informix /opt/IBM/informix /home/informix; do
+    for d in /opt/irium/informix /opt/informix /informix /usr/informix /opt/IBM/informix /home/informix; do
       [ -x "$d/bin/onstat" ] && { export INFORMIXDIR="$d"; break; }
     done
   fi
@@ -161,9 +161,17 @@ statique_informix() {
     echo "$p -> $(df -P "$p" 2>/dev/null | awk 'NR==2{print $1" monté sur "$6}') $( [ -b "$(readlink -f "$p")" ] && echo '(périphérique brut)' || echo '(fichier)')"
   done > "$d/chunks_peripheriques.txt"
   # Journal du moteur (MSGPATH) : dernières 20 000 lignes
-  local msg; msg="$(timeout 30 onstat -c 2>/dev/null | awk '$1=="MSGPATH"{print $2}')"
-  [ -z "$msg" ] && msg="$(grep -E '^\s*MSGPATH' "$cf" 2>/dev/null | awk '{print $2}')"
+  local msg; msg="$(chemin_msgpath)"
   [ -f "$msg" ] && tail -n 20000 "$msg" > "$d/online_log.txt"
+}
+
+# MSGPATH peut contenir $INFORMIXDIR (ex. Scania : $INFORMIXDIR/tmp/online.log)
+chemin_msgpath() {
+  local cf="${INFORMIXDIR}/etc/${ONCONFIG:-onconfig}" m
+  m="$(grep -E '^\s*MSGPATH' "$cf" 2>/dev/null | awk '{print $2}' | tail -1)"
+  [ -z "$m" ] && m="$(timeout 30 onstat -c 2>/dev/null | awk '$1=="MSGPATH"{print $2}' | tail -1)"
+  m="${m//\$INFORMIXDIR/$INFORMIXDIR}"; m="${m//\$\{INFORMIXDIR\}/$INFORMIXDIR}"
+  echo "$m"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -218,6 +226,9 @@ echantillon_processus() {
 
 echantillon_latence() {
   [ -n "$BDD_HOTE" ] || return 0
+  if [ -n "$BDD_PORT" ] && ! [[ "$BDD_PORT" =~ ^[0-9]+$ ]]; then   # nom de service (ex. sqlexec) -> numéro
+    BDD_PORT="$(getent services "$BDD_PORT" 2>/dev/null | awk '{split($2,a,"/"); print a[1]; exit}')"
+  fi
   local f="$DOSSIER/series/latence.raw"
   { horodatage
     ping -c 5 -i 0.2 -W 2 "$BDD_HOTE" 2>&1 | tail -2
@@ -283,7 +294,7 @@ preparer() {
 terminer() {
   echo "fin=$(date '+%F %T')" >> "$DOSSIER/info.txt"
   [ "$IFX" -eq 1 ] && { timeout 60 onstat -g ckp > "$DOSSIER/informix/fin_onstat_ckp.txt" 2>&1
-    local msg; msg="$(timeout 30 onstat -c 2>/dev/null | awk '$1=="MSGPATH"{print $2}')"; [ -f "$msg" ] && tail -n 20000 "$msg" > "$DOSSIER/informix/fin_online_log.txt"; }
+    local msg; msg="$(chemin_msgpath)"; [ -f "$msg" ] && tail -n 20000 "$msg" > "$DOSSIER/informix/fin_online_log.txt"; }
   rm -f "$EN_COURS_LIEN" "$SORTIE/supervision.pid"
   tar -C "$SORTIE" -czf "$DOSSIER.tar.gz" "$(basename "$DOSSIER")" 2>/dev/null
   journal "Terminé. Données : $DOSSIER - Archive : $DOSSIER.tar.gz"

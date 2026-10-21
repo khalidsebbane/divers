@@ -95,3 +95,23 @@ def test_sans_incident_et_html(tmp_path):
 def test_audit_syntaxe_bash():
     script = os.path.join(os.path.dirname(__file__), '..', 'audit-irium.sh')
     assert subprocess.run(['bash', '-n', script]).returncode == 0
+
+
+def test_journal_moteur_msg_date_et_config_scania(tmp_path):
+    import datetime as dt
+    d = tmp_path / 'srv'
+    (d / 'statique' / 'informix').mkdir(parents=True)
+    (d / 'statique' / 'informix' / 'online_log.txt').write_text(
+        '10/22/26 08:15:02  Checkpoint Completed:  duration was 12 seconds.\n'
+        '10/22/26 08:16:10  Lock table overflow - user id 1001 session id 4012\n')
+    ev, ckp = r.journal_moteur(str(d), dt.datetime(2026, 10, 22, 7, 30), dt.datetime(2026, 10, 22, 12, 30))
+    assert ckp[0]['total'] == 12 and ckp[0]['ts'] == dt.datetime(2026, 10, 22, 8, 15, 2)
+    assert ev and ev[0][1] == 'haute'
+    cf = {'BUFFERPOOL': ['size=2k,buffers=8000000,lrus=128,lru_min_dirty=1,lru_max_dirty=2'], 'SHMVIRTSIZE': '12288000', 'RESIDENT': '-1',
+          'VPCLASS': ['cpu,num=11'], 'NETTYPE': ['ipcshm,1,100,CPU', 'soctcp,6,300,NET'], 'USELASTCOMMITTED': '"NONE"',
+          'HDR_TXN_SCOPE': 'NEAR_SYNC', 'DRINTERVAL': '0', 'LTAPEDEV': '/dev/null'}
+    titres = {t: g for g, t, _p, _r in r.revue_configuration(cf, 32 * 1024, 12)}
+    assert titres['Mémoire partagée Informix proche de la RAM totale'] == 'moyenne'      # 27 Go sur 32 Go
+    assert titres['VP CPU + VP réseau supérieurs au nombre de cœurs'] == 'moyenne'
+    assert 'Lecture de la dernière version validée désactivée' in titres and 'Réplication HDR synchrone' in titres
+    assert 'Plus de VP CPU que de cœurs' in [t for _g, t, _p, _r in r.revue_configuration(cf, 32 * 1024, 8)]
