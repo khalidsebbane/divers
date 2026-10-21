@@ -83,6 +83,13 @@ Un mode « poussé » reste disponible (collecteur lancé par cron et envoyant e
 
 Détails pour le RSSI : **[docs/securite.md](docs/securite.md)**.
 
+## Tester d'abord sur le serveur de base (sans portail)
+
+**[docs/guide-test-local.md](docs/guide-test-local.md)** explique la mise en place sur le serveur Informix :
+- collecte automatique toutes les 5 minutes, avec archive locale ;
+- rapports HTML dans `/msdos/ks` (global, par poste IP, par utilisateur) ;
+- une seule commande d'installation : `./siem-local.sh installer --base <base>`.
+
 ## Installation
 
 Guide complet : **[docs/installation.md](docs/installation.md)**.

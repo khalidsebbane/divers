@@ -582,7 +582,7 @@ def collecter_applicatif(conf, depuis):
     for l in dbaccess_unload(conf, base, req):
         ligne = dict(zip(cols, l))
         ts = parse_date(ligne.get(roles['date']))
-        if ts is None:
+        if ts is None or ts < depuis:
             continue
         val = lambda r: (ligne.get(roles[r], '') or '').strip() if r in roles else ''
         fin = parse_date(val('fin'))
@@ -657,6 +657,8 @@ def collecter_tout(conf, etat, reprise=None):
     """Exécute toutes les sources actives. Retourne (événements, nouveaux points de reprise, compte rendu)."""
     defaut = dt.datetime.now() - dt.timedelta(days=int(conf.get('collecteur', 'historique_jours', fallback='35')))
     tous, points, rapport = [], {}, []
+    deja = set(etat.get('frontiere', []))   # événements déjà transmis à la seconde du point de reprise
+    frontiere = []
     actives = [s.strip() for s in conf.get('collecteur', 'sources', fallback='wtmp,btmp,secure,auditd').split(',') if s.strip()]
     for nom, _section, fonction in SOURCES:
         if nom not in actives:
@@ -669,11 +671,13 @@ def collecter_tout(conf, etat, reprise=None):
             log('source %s en erreur : %s' % (nom, e))
             rapport.append({'source': nom, 'statut': 'erreur', 'message': str(e)[:500]})
             continue
+        if evts:
+            points[nom] = max(e['ts'] for e in evts)
+            frontiere.extend(e['empreinte'] for e in evts if e['ts'] == points[nom])
+        evts = [e for e in evts if e['empreinte'] not in deja]
         log('%-10s %5d événement(s) depuis %s' % (nom, len(evts), depuis.strftime('%Y-%m-%d %H:%M:%S')))
         rapport.append({'source': nom, 'statut': 'ok', 'evenements': len(evts)})
         tous.extend(evts)
-        if evts:
-            points[nom] = max(e['ts'] for e in evts)
     if 'sessions' in actives:
         try:
             evts = collecter_sessions(conf, etat)
@@ -684,6 +688,9 @@ def collecter_tout(conf, etat, reprise=None):
             log('source sessions en erreur : %s' % e)
             rapport.append({'source': 'sessions', 'statut': 'erreur', 'message': str(e)[:500]})
     tous.sort(key=lambda e: e['ts'])
+    # on garde la frontière des sources sans nouvel événement, pour ne pas renvoyer leurs derniers événements
+    anciens = [h for h in deja if h not in frontiere] if not reprise else []
+    etat['frontiere'] = (frontiere + anciens)[-5000:]
     return tous, points, rapport
 
 

@@ -151,3 +151,40 @@ def test_rapport_poste_correlation_terminal(tmp_path):
     assert 'Xp_saisie' in csv_txt and 'même terminal pts/3' in csv_txt
     assert 'dbaccess prod' in csv_txt and 'pendant la session pts/3' in csv_txt
     assert 'Xp_consult' not in csv_txt and 'sbernard' not in csv_txt      # autre poste : exclu
+
+
+def test_rapport_local_archive(tmp_path):
+    """Rapport local : sessions, corrélation terminal des programmes, filtre par IP, sudo pendant la session."""
+    import json
+    import subprocess
+    arch = tmp_path / 'donnees'
+    arch.mkdir()
+    evts = [
+        {'ts': '2026-10-06T08:30:00', 'source': 'systeme', 'categorie': 'connexion', 'action': 'Ouverture de session SSH (terminal)',
+         'compte': 'jdupont', 'utilisateur': 'jdupont', 'ip': '10.12.4.21', 'session': 'ssh:pts/3:1', 'details': {'terminal': 'pts/3'}},
+        {'ts': '2026-10-06T09:00:00', 'source': 'applicatif', 'categorie': 'programme', 'action': 'Lancement de programme', 'compte': 'regix',
+         'utilisateur': 'jdupont', 'ip': '', 'objet': 'Xp_saisie', 'details': {'alds_tty': 'pts/3'}},
+        {'ts': '2026-10-06T09:15:00', 'source': 'systeme', 'categorie': 'sudo', 'action': 'sudo vers informix', 'compte': 'informix',
+         'utilisateur': 'jdupont', 'objet': 'dbaccess prod -'},
+        {'ts': '2026-10-06T09:20:00', 'source': 'applicatif', 'categorie': 'programme', 'action': 'Lancement de programme', 'compte': 'regix',
+         'utilisateur': 'sbernard', 'ip': '', 'objet': 'Xp_consult', 'details': {'alds_tty': 'pts/9'}},
+        {'ts': '2026-10-06T12:00:00', 'source': 'systeme', 'categorie': 'deconnexion', 'action': 'Fermeture de session', 'compte': 'jdupont',
+         'ip': '10.12.4.21', 'session': 'ssh:pts/3:1'},
+        {'ts': '2026-10-06T23:10:00', 'source': 'base', 'categorie': 'ddl', 'action': 'Suppression de table', 'compte': 'regix',
+         'ip': '10.9.9.9', 'objet': 'prod:t'},
+    ]
+    with open(str(arch / 'evenements-2026-10.jsonl'), 'w') as f:
+        for i, e in enumerate(evts):
+            e['empreinte'] = str(i)
+            f.write(json.dumps(e) + '\n')
+        f.write(json.dumps(evts[0]) + '\n')   # doublon : ignoré
+    script = os.path.join(os.path.dirname(__file__), '..', 'collecteur', 'rapport_local.py')
+    commun = ['--archive', str(arch), '--depuis', '2026-10-01', '--jusqua', '2026-10-31', '-o', str(tmp_path / 'out'), '--dernier', '']
+    sortie = subprocess.run([sys.executable, script] + commun, check=True, stdout=subprocess.PIPE).stdout.decode()
+    assert '(6 événement(s), 1 alerte(s))' in sortie            # suppression de table la nuit = alerte critique
+    page = next((tmp_path / 'out').glob('siem_global_*.html')).read_text(encoding='utf-8')
+    assert 'terminal pts/3 de la session ouverte' in page and 'Critique' in page and '3h30' in page
+    subprocess.run([sys.executable, script, '--ip', '10.12.4.21'] + commun, check=True, stdout=subprocess.DEVNULL)
+    csv_ip = next((tmp_path / 'out').glob('siem_poste_*.csv')).read_text(encoding='utf-8-sig')
+    assert 'Xp_saisie' in csv_ip and 'dbaccess prod' in csv_ip
+    assert 'Xp_consult' not in csv_ip and 'prod:t' not in csv_ip

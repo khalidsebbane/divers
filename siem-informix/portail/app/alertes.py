@@ -32,9 +32,9 @@ def evaluer(cx, e):
     #    - côté système : connexion directe au compte (SSH) sans identité certaine. Un sudo/su depuis un compte
     #      nominatif est tracé (personne certaine) et n'est signalé que hors heures ouvrées ;
     #    - côté base : l'application se connecte normalement avec ce compte, on ne signale que
-    #      les sessions hors heures ouvrées ou depuis un poste non affecté.
+    #      les sessions hors heures ouvrées.
     partage = compte in config.comptes_partages and e['categorie'] in ('connexion', 'changement_compte', 'sudo')
-    if partage and ((e['source'] == 'systeme' and e['attribution'] != 'certaine') or hors or e['attribution'] == 'compte'):
+    if partage and ((e['source'] == 'systeme' and e['attribution'] != 'certaine') or hors):
         gravite = 'haute' if (hors or e['attribution'] == 'compte') else 'moyenne'
         motif = ' hors heures ouvrées' if hors else (' depuis un poste non affecté' if e['attribution'] == 'compte' else '')
         n += _creer(cx, e, 'compte_partage', gravite, 'Utilisation du compte partagé %s%s' % (e['compte'], motif),
