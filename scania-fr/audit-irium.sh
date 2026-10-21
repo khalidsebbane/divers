@@ -14,10 +14,12 @@
 #        [--motifs 'ipscrond|fglrun|...']  processus IRIUM à suivre
 #        [--sortie /var/tmp/scania-fr]     dossier de sortie
 #        [--sans-sql]               ne pas interroger sysmaster par SQL
+#        [--sans-rapport]           ne pas générer le rapport HTML en fin d'audit
 #   ./audit-irium.sh marquer "lenteur saisie commande agence Lyon"   noter un signalement utilisateur
 #   ./audit-irium.sh statut | arreter
 #
-# Résultat : <sortie>/<serveur>_<date>/ + archive .tar.gz, à analyser avec rapport_audit.py
+# Résultat : <sortie>/<serveur>_<date>/ avec rapport_<serveur>.html (diagnostic et recommandations) + archive .tar.gz.
+# Rapport consolidé de plusieurs serveurs : rapport_audit.py archive1.tar.gz archive2.tar.gz ...
 # Impact : quelques commandes « onstat » (lecture de la mémoire partagée) et lectures de /proc par minute.
 # Aucune commande lourde (oncheck, update statistics...) n'est lancée, rien n'est modifié.
 # =============================================================================================
@@ -32,6 +34,7 @@ BDD_HOTE=""
 BDD_PORT=""
 ROLE=auto
 AVEC_SQL=1
+RAPPORT=1
 MOTIFS='ipscrond|fglrun|fglgo|fglrunner|irium|ips[a-z_]*'
 INFORMIXDIR_OPT="" INFORMIXSERVER_OPT="" ONCONFIG_OPT=""
 HOTE=$(hostname -s 2>/dev/null || hostname)
@@ -108,12 +111,14 @@ statique_systeme() {
   { free -m; echo; cat /proc/meminfo; } > "$d/memoire.txt" 2>&1
   {
     for k in vm.swappiness vm.dirty_ratio vm.dirty_background_ratio vm.overcommit_memory kernel.shmmax kernel.shmall kernel.shmmni \
-             kernel.sem fs.file-max net.core.somaxconn net.ipv4.tcp_keepalive_time net.core.rmem_max net.core.wmem_max kernel.numa_balancing; do
+             kernel.sem fs.file-max net.core.somaxconn net.ipv4.tcp_keepalive_time net.core.rmem_max net.core.wmem_max kernel.numa_balancing \
+             vm.min_free_kbytes vm.zone_reclaim_mode vm.vfs_cache_pressure vm.dirty_expire_centisecs; do
       echo "$k = $(sysctl -n "$k" 2>/dev/null)"
     done
     echo "transparent_hugepage = $(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null)"
     echo "transparent_hugepage_defrag = $(cat /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null)"
     echo "hugepages = $(grep -E 'HugePages_(Total|Free)' /proc/meminfo | tr '\n' ' ')"
+    echo; echo "== buddyinfo (blocs libres par ordre : 4K 8K 16K ... 4M)"; cat /proc/buddyinfo 2>/dev/null
   } > "$d/noyau.txt" 2>&1
   { df -Th; echo; df -i; echo; lsblk -o NAME,KNAME,TYPE,SIZE,ROTA,SCHED,MOUNTPOINT 2>/dev/null || lsblk; echo
     for q in /sys/block/*/queue; do b=${q%/queue}; echo "${b##*/} scheduler=$(cat $q/scheduler 2>/dev/null) rotational=$(cat $q/rotational 2>/dev/null) nr_requests=$(cat $q/nr_requests 2>/dev/null) read_ahead_kb=$(cat $q/read_ahead_kb 2>/dev/null)"; done
@@ -163,6 +168,52 @@ statique_informix() {
   # Journal du moteur (MSGPATH) : dernières 20 000 lignes
   local msg; msg="$(chemin_msgpath)"
   [ -f "$msg" ] && tail -n 20000 "$msg" > "$d/online_log.txt"
+  ouverture_chunks
+  inventaire_sql
+}
+
+# DIRECT_IO réellement actif ? Drapeaux d'ouverture des chunks par les processus oninit (O_DIRECT = 040000)
+ouverture_chunks() {
+  local f="$DOSSIER/statique/informix/chunks_ouverture.txt" chunks pid fd cible fl
+  chunks="$(timeout 60 onstat -d 2>/dev/null | awk '$NF ~ /^\// {print $NF}' | sort -u | while read -r p; do readlink -f "$p"; done)"
+  [ -n "$chunks" ] || return 0
+  echo "# chunk|pid|flags(octal)|o_direct|type" > "$f"
+  for pid in $(pgrep -x oninit 2>/dev/null); do
+    for fd in /proc/"$pid"/fd/*; do
+      cible="$(readlink "$fd" 2>/dev/null)" || continue
+      grep -qxF "$cible" <<< "$chunks" || continue
+      grep -qF "$cible|" "$f" && continue
+      fl="$(awk '/^flags/{print $2}' "/proc/$pid/fdinfo/${fd##*/}" 2>/dev/null)"
+      echo "$cible|$pid|$fl|$(( (8#${fl:-0} & 8#40000) ? 1 : 0 ))|$([ -b "$cible" ] && echo brut || echo fichier)" >> "$f"
+    done
+  done
+}
+
+# Exécute une requête SQL en lecture seule et écrit le résultat au format unload (séparateur |)
+unl() {   # unl <base> <fichier> <requête>
+  [ "$IFX" -eq 1 ] && [ "$AVEC_SQL" -eq 1 ] && existe dbaccess || return 1
+  timeout 300 dbaccess "$1" - >> "$DOSSIER/informix/inventaire/erreurs_sql.txt" 2>&1 <<EOSQL
+SET ISOLATION TO DIRTY READ;
+SET LOCK MODE TO WAIT 5;
+UNLOAD TO '$2' DELIMITER '|' $3;
+EOSQL
+}
+
+# Inventaire (une fois) : remplissage des dbspaces, taille/extents des tables, fraîcheur des statistiques
+inventaire_sql() {
+  [ "$IFX" -eq 1 ] && [ "$AVEC_SQL" -eq 1 ] && existe dbaccess || return 0
+  local v="$DOSSIER/informix/inventaire" b; mkdir -p "$v"
+  local sysb="'sysmaster','sysadmin','sysutils','sysuser','sysha','syscdr','sys_trace'"
+  unl sysmaster "$v/dbspaces.unl" "SELECT TRIM(d.name), d.is_temp, d.is_blobspace, SUM(c.chksize), SUM(c.nfree), COUNT(*) FROM sysdbspaces d, syschunks c WHERE d.dbsnum = c.dbsnum GROUP BY 1, 2, 3"
+  unl sysmaster "$v/partitions.unl" "SELECT partnum, TRIM(dbsname), TRIM(tabname) FROM systabnames WHERE dbsname NOT IN ($sysb)"
+  unl sysmaster "$v/tailles.unl" "SELECT FIRST 300 TRIM(n.dbsname), TRIM(n.tabname), h.nptotal, h.npused, h.nrows, h.nextns FROM systabnames n, sysptnhdr h WHERE n.partnum = h.partnum AND n.dbsname NOT IN ($sysb) ORDER BY h.nptotal DESC"
+  unl sysmaster "$v/bases.unl" "SELECT TRIM(name) FROM sysdatabases WHERE name NOT IN ($sysb)"
+  for b in $(cut -d'|' -f1 "$v/bases.unl" 2>/dev/null | head -10); do
+    [[ "$b" =~ ^[A-Za-z0-9_]+$ ]] || continue
+    unl "$b" "$v/stats_$b.unl" "SELECT TRIM(tabname), nrows, npused, ustlowts FROM systables WHERE tabid > 99 AND tabtype = 'T'"
+    unl "$b" "$v/distrib_$b.unl" "SELECT TRIM(t.tabname), MAX(d.constructed), COUNT(*) FROM sysdistrib d, systables t WHERE d.tabid = t.tabid AND t.tabid > 99 GROUP BY 1"
+    unl "$b" "$v/index_$b.unl" "SELECT TRIM(i.idxname), TRIM(t.tabname) FROM sysindexes i, systables t WHERE i.tabid = t.tabid AND t.tabid > 99"
+  done
 }
 
 # MSGPATH peut contenir $INFORMIXDIR (ex. Scania : $INFORMIXDIR/tmp/online.log)
@@ -251,6 +302,7 @@ echantillon_informix() {
 }
 
 echantillon_informix_lent() {   # toutes les 5 minutes
+  { horodatage; cat /proc/buddyinfo 2>/dev/null; } >> "$DOSSIER/series/buddyinfo.raw"
   [ "$IFX" -eq 1 ] || return 0
   local i="$DOSSIER/informix"
   brut "$i/onstat_glo.raw" onstat -g glo
@@ -270,8 +322,23 @@ echantillon_informix_lourd() {  # toutes les 15 minutes
   brut "$i/onstat_ath.raw" onstat -g ath
   brut "$i/onstat_repl.raw" onstat -g repl
   brut "$i/onstat_rss.raw" onstat -g rss
-  brut "$i/onstat_ppf.raw" onstat -g ppf
   sql_sysmaster
+  profils_objets
+}
+
+# Compteurs par partition (table/index) et par session : comparés entre le premier et le dernier relevé
+profils_objets() {
+  [ "$IFX" -eq 1 ] || return 0
+  local i="$DOSSIER/informix" t="$DOSSIER/informix/inventaire/tmp.unl"
+  brut "$i/onstat_ppf.raw" onstat -g ppf
+  mkdir -p "$i/inventaire"
+  if unl sysmaster "$t" "SELECT TRIM(dbsname), TRIM(tabname), isreads, bufreads, pagreads, seqscans, lockreqs, lockwts, iswrites, bufwrites, pagwrites FROM sysptprof WHERE dbsname NOT IN ('sysmaster','sysadmin','sysutils','sysuser') AND (bufreads > 0 OR pagreads > 0)"; then
+    { horodatage; cat "$t" 2>/dev/null; echo; } >> "$i/profil_tables.raw"
+  fi
+  if unl sysmaster "$t" "SELECT FIRST 300 p.sid, TRIM(s.username), TRIM(s.hostname), s.pid, p.pagreads, p.bufreads, p.isreads, p.seqscans, p.lockreqs, p.lockwts, p.total_sorts, p.dsksorts FROM syssesprof p, syssessions s WHERE p.sid = s.sid ORDER BY p.pagreads DESC"; then
+    { horodatage; cat "$t" 2>/dev/null; echo; } >> "$i/profil_sessions.raw"
+  fi
+  rm -f "$t"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -296,8 +363,26 @@ terminer() {
   [ "$IFX" -eq 1 ] && { timeout 60 onstat -g ckp > "$DOSSIER/informix/fin_onstat_ckp.txt" 2>&1
     local msg; msg="$(chemin_msgpath)"; [ -f "$msg" ] && tail -n 20000 "$msg" > "$DOSSIER/informix/fin_online_log.txt"; }
   rm -f "$EN_COURS_LIEN" "$SORTIE/supervision.pid"
+  generer_rapport
   tar -C "$SORTIE" -czf "$DOSSIER.tar.gz" "$(basename "$DOSSIER")" 2>/dev/null
   journal "Terminé. Données : $DOSSIER - Archive : $DOSSIER.tar.gz"
+}
+
+# Rapport HTML (diagnostic + recommandations) généré automatiquement à la fin de l'audit
+generer_rapport() {
+  [ "$RAPPORT" -eq 1 ] || return 0
+  local py r; r="$(dirname "$(readlink -f "$0")")/rapport_audit.py"
+  [ -f "$r" ] || { journal "rapport_audit.py absent à côté du script : rapport non généré"; return 0; }
+  local ok=""
+  for py in /usr/libexec/platform-python python3 python3.6 python; do   # Python 3.6+ requis (RHEL 7 : souvent Python 2.7 seul)
+    existe "$py" && "$py" -c 'import sys; sys.exit(sys.version_info < (3, 6))' 2>/dev/null && { ok=1; break; }
+  done
+  [ -n "$ok" ] || { journal "Python 3.6+ absent : générer le rapport sur un autre poste (rapport_audit.py <archive>)"; return 0; }
+  if timeout 600 "$py" "$r" "$DOSSIER" -o "$DOSSIER/rapport_${HOTE}.html" >> "$DOSSIER/journal.txt" 2>&1; then
+    journal "Rapport : $DOSSIER/rapport_${HOTE}.html (recommandations en fin de rapport)"
+  else
+    journal "Échec de génération du rapport (voir journal.txt) : relancer rapport_audit.py sur l'archive"
+  fi
 }
 
 cmd_instantane() {
@@ -311,6 +396,7 @@ cmd_instantane() {
     [ $n -lt 3 ] && sleep "$INTERVALLE"
   done
   echantillon_informix_lent
+  profils_objets
   terminer
 }
 
@@ -332,6 +418,7 @@ boucle_supervision() {
     if [ "$reste" -gt 0 ]; then sleep "$reste" & wait $!; fi   # « wait » : l'arrêt est pris en compte immédiatement
   done
   echantillon_informix_lent
+  profils_objets
   terminer
 }
 
@@ -396,7 +483,7 @@ while [ $# -gt 0 ]; do
     --duree) DUREE="$2"; shift 2;; --intervalle) INTERVALLE="$2"; shift 2;; --debut) DEBUT="$2"; shift 2;;
     --sortie) SORTIE="$2"; EN_COURS_LIEN="$SORTIE/en-cours"; shift 2;;
     --bdd-hote) BDD_HOTE="$2"; shift 2;; --bdd-port) BDD_PORT="$2"; shift 2;; --motifs) MOTIFS="$2"; shift 2;;
-    --role) ROLE="$2"; shift 2;; --sans-sql) AVEC_SQL=0; shift;;
+    --role) ROLE="$2"; shift 2;; --sans-sql) AVEC_SQL=0; shift;; --sans-rapport) RAPPORT=0; shift;;
     --informixdir) INFORMIXDIR_OPT="$2"; shift 2;; --informixserver) INFORMIXSERVER_OPT="$2"; shift 2;; --onconfig) ONCONFIG_OPT="$2"; shift 2;;
     *) [ "$ACTION" = marquer ] && break; echo "Option inconnue : $1" >&2; exit 1;;
   esac
@@ -408,5 +495,5 @@ case "$ACTION" in
   statut) cmd_statut ;;
   arreter) cmd_arreter ;;
   _executer) executer_supervision ;;  # interne
-  *) sed -n '3,22p' "$0"; exit 1 ;;
+  *) sed -n '3,24p' "$0"; exit 1 ;;
 esac

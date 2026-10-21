@@ -11,13 +11,18 @@ Un rapport unique regroupe tous les serveurs audités (base principale, réplica
   - corrélations entre serveurs (traitements ipscrond <-> charge et verrous de la base) ;
   - graphiques sur la période : CPU, charge, mémoire, disques, réseau, Informix (cache, verrous,
     sessions en attente, checkpoints, file d'attente CPU), processus IRIUM ;
-  - paramètres clés ONCONFIG commentés, configuration système, détails bruts.
+  - classements des objets les plus coûteux (lectures physiques et logiques, scans séquentiels, parcours
+    inverses d'index, verrous), sessions, remplissage des dbspaces, fraîcheur des statistiques ;
+  - paramètres clés ONCONFIG commentés et croisés avec les mesures ;
+  - en fin de rapport, le plan de recommandations priorisé (également exporté en CSV pour Excel).
 Python 3.6+, aucune dépendance (fonctionne avec /usr/libexec/platform-python).
 """
 from __future__ import print_function
 
 import argparse
+import csv
 import datetime as dt
+import glob
 import html
 import io
 import math
@@ -135,6 +140,11 @@ def serie_memoire(d):
                 e['swap_in_s'] = (pv.get('pswpin', 0) - prec[1].get('pswpin', 0)) / el
                 e['swap_out_s'] = (pv.get('pswpout', 0) - prec[1].get('pswpout', 0)) / el
                 e['majflt_s'] = (pv.get('pgmajfault', 0) - prec[1].get('pgmajfault', 0)) / el
+                sp = lambda pref: sum(x for k, x in pv.items() if k.startswith(pref)) - sum(x for k, x in prec[1].items() if k.startswith(pref))
+                e['compact_stall_s'] = sp('compact_stall') / el
+                e['allocstall_s'] = sp('allocstall') / el
+                e['pgscan_direct_s'] = sp('pgscan_direct') / el
+                e['recup_mo_s'] = sp('pgsteal_') * 4 / 1024.0 / el
             prec = (ts, pv)
         res.append(e)
     return res
@@ -348,7 +358,9 @@ def f_fg(t):
 def f_entete(t):
     m = re.search(r'--\s*(.+?)\s*--\s*Up', t)
     b = re.search(r'Blocked:\s*(\S+)', t)
-    return {'mode': m.group(1) if m else '', 'bloque': b.group(1) if b else ''}
+    u = re.search(r'Up\s+(?:(\d+)\s+days?\s+)?(\d+):(\d\d):(\d\d)', t)
+    up = (int(u.group(1) or 0) * 86400 + int(u.group(2)) * 3600 + int(u.group(3)) * 60 + int(u.group(4))) if u else None
+    return {'mode': m.group(1) if m else '', 'bloque': b.group(1) if b else '', 'uptime_s': up}
 
 
 def deltas(serie, cle, par_min=False):
@@ -468,6 +480,12 @@ def replication(d):
     return etats, backlog
 
 
+def nb_rss(d):
+    m = re.search(r'Number of RSS servers:\s*(\d+)', lire(os.path.join(d, 'statique', 'informix', 'onstat__g_rss.txt')) +
+                  ''.join(t for _ts, t in blocs(os.path.join(d, 'informix', 'onstat_rss.raw'))[-1:]))
+    return int(m.group(1)) if m else 0
+
+
 def onconfig(d):
     t = lire(os.path.join(d, 'statique', 'informix', 'onconfig.txt')) or lire(os.path.join(d, 'statique', 'informix', 'onstat__c.txt'))
     res = {}
@@ -528,6 +546,357 @@ def journal_moteur(d, debut, fin):
 
 
 # --------------------------------------------------------------------------------------------
+# Objets Informix : profils par partition (onstat -g ppf, sysptprof), sessions, inventaire
+# --------------------------------------------------------------------------------------------
+PPF = ('lkrqs', 'lkwts', 'dlks', 'touts', 'isrd', 'iswrt', 'isrwt', 'isdel', 'bfrd', 'bfwrt', 'seqsc', 'rvscn', 'rhit')
+BASES_SYSTEME = ('sysmaster', 'sysadmin', 'sysutils', 'sysuser', 'sysha', 'syscdr')
+
+
+def entier(v):
+    """Compteur onstat ou unload : '123', '1.2e9', '12K', '3M'."""
+    v = (v or '').strip()
+    m = re.match(r'^(-?[\d.]+(?:e\+?\d+)?)([KMG]?)$', v, re.I)
+    if not m:
+        return None
+    return float(m.group(1)) * {'': 1, 'K': 1e3, 'M': 1e6, 'G': 1e9}[m.group(2).upper()]
+
+
+def lignes_unl(t):
+    res = []
+    for l in t.splitlines():
+        if '|' in l:
+            p = [x.strip() for x in l.split('|')]
+            res.append(p[:-1] if p and p[-1] == '' else p)
+    return res
+
+
+def parse_ppf(t):
+    res = {}
+    for l in t.splitlines():
+        p = l.split()
+        if len(p) >= 14 and p[0].startswith('0x'):
+            try:
+                pn = int(p[0], 16)
+            except ValueError:
+                continue
+            v = [entier(x) for x in p[1:14]]
+            if None not in v:
+                res[pn] = dict(zip(PPF, v))
+    return res
+
+
+def date_sql(v, dmy=True):
+    v = (v or '').strip()
+    for f in (('%d/%m/%Y', '%m/%d/%Y') if dmy else ('%m/%d/%Y', '%d/%m/%Y')) + ('%Y-%m-%d',):
+        try:
+            return dt.datetime.strptime(v[:19].split(' ')[0] if f == '%Y-%m-%d' else v[:10], f)
+        except ValueError:
+            pass
+    return None
+
+
+def inventaire(d):
+    inv = os.path.join(d, 'informix', 'inventaire')
+    r = {'dbspaces': [], 'tailles': {}, 'stats': {}, 'index': {}, 'noms': {}}
+    for x in lignes_unl(lire(os.path.join(inv, 'dbspaces.unl'))):
+        if len(x) >= 5 and entier(x[3]):
+            tot, libre = entier(x[3]), entier(x[4]) or 0
+            r['dbspaces'].append({'nom': x[0], 'temp': x[1] == '1', 'blob': x[2] == '1', 'pages': tot, 'libres': libre,
+                                  'libre_pct': 100.0 * libre / tot, 'chunks': int(entier(x[5]) or 0) if len(x) > 5 else 0})
+    for x in lignes_unl(lire(os.path.join(inv, 'partitions.unl'))):
+        if len(x) >= 3 and re.match(r'^-?\d+$', x[0]):
+            r['noms'][int(x[0])] = (x[1], x[2])
+    for x in lignes_unl(lire(os.path.join(inv, 'tailles.unl'))):
+        if len(x) >= 6:
+            cle = (x[0], x[1])
+            a = r['tailles'].setdefault(cle, {'nptotal': 0, 'npused': 0, 'nrows': 0, 'nextns': 0})
+            for i, k in enumerate(('nptotal', 'npused', 'nrows', 'nextns')):
+                a[k] += entier(x[2 + i]) or 0
+    env = lire(os.path.join(d, 'statique', 'informix', 'environnement.txt'))
+    dmy = not re.search(r'^DBDATE=MDY', env, re.M)
+    for f in glob.glob(os.path.join(inv, 'stats_*.unl')):
+        base = os.path.basename(f)[6:-4]
+        distrib = {x[0]: date_sql(x[1], dmy) for x in lignes_unl(lire(os.path.join(inv, 'distrib_%s.unl' % base))) if len(x) >= 2}
+        for x in lignes_unl(lire(f)):
+            if len(x) >= 4:
+                dates = [v for v in (date_sql(x[3], dmy), distrib.get(x[0])) if v]
+                r['stats'][(base, x[0])] = {'nrows': entier(x[1]), 'npused': entier(x[2]), 'stats': max(dates) if dates else None,
+                                            'distrib': distrib.get(x[0])}
+        for x in lignes_unl(lire(os.path.join(inv, 'index_%s.unl' % base))):
+            if len(x) >= 2:
+                r['index'][(base, x[0])] = x[1]
+    return r
+
+
+def objets(d, inv, uptime_s=None):
+    """Compteurs par objet (table ou index) : cumul depuis le démarrage et delta sur la fenêtre d'audit."""
+    ppf = [(ts, parse_ppf(t)) for ts, t in blocs(os.path.join(d, 'informix', 'onstat_ppf.raw'))]
+    ppf = [x for x in ppf if x[1]]
+    if not ppf:
+        t = parse_ppf(lire(os.path.join(d, 'statique', 'informix', 'onstat__g_ppf.txt')))
+        ppf = [(None, t)] if t else []
+    prof = [(ts, lignes_unl(t)) for ts, t in blocs(os.path.join(d, 'informix', 'profil_tables.raw'))]
+    prof = [x for x in prof if x[1]]
+
+    def regrouper(dic):
+        g = {}
+        for pn, v in dic.items():
+            base, nom = inv['noms'].get(pn, ('?', '0x%x' % pn))
+            if base in BASES_SYSTEME:
+                continue
+            a = g.setdefault((base, nom), dict((k, 0.0) for k in PPF))
+            for k in PPF:
+                a[k] = a[k] + v[k] * (v['bfrd'] if k == 'rhit' else 1)
+        for a in g.values():
+            a['rhit'] = a['rhit'] / a['bfrd'] if a['bfrd'] else None
+        return g
+
+    def pagreads(rows):
+        g = {}
+        for x in rows:
+            if len(x) >= 5 and x[0] not in BASES_SYSTEME:
+                g[(x[0], x[1])] = g.get((x[0], x[1]), 0) + (entier(x[4]) or 0)
+        return g
+
+    if not ppf and not prof:
+        return None
+    fin = regrouper(ppf[-1][1]) if ppf else {}
+    deb = regrouper(ppf[0][1]) if len(ppf) > 1 and ppf[0][0] else None
+    duree = (ppf[-1][0] - ppf[0][0]).total_seconds() if deb is not None else 0
+    pf, pd = (pagreads(prof[-1][1]), pagreads(prof[0][1])) if prof else ({}, {})
+    duree_p = (prof[-1][0] - prof[0][0]).total_seconds() if len(prof) > 1 else 0
+    liste = []
+    for cle in set(fin) | set(pf):
+        base, nom = cle
+        c = dict(fin.get(cle) or dict((k, 0.0) for k in PPF))
+        c['pagreads'] = pf.get(cle)
+        dlt = {}
+        if deb is not None and cle in deb and duree > 0 and c['bfrd'] >= deb[cle]['bfrd']:
+            dlt = dict((k, c[k] - deb[cle][k]) for k in PPF if k != 'rhit')
+        if duree_p > 0 and cle in pd and pf.get(cle) is not None and pf[cle] >= pd[cle]:
+            dlt['pagreads'] = pf[cle] - pd[cle]
+        table = inv['index'].get(cle)
+        taille = inv['tailles'].get(cle) or {}
+        st = inv['stats'].get((base, table or nom)) or {}
+        liste.append({'base': base, 'nom': nom, 'type': 'index' if table else ('table' if not nom.startswith('0x') else '?'),
+                      'table': table or nom, 'c': c, 'd': dlt, 'pages': taille.get('npused') or st.get('npused'),
+                      'extents': taille.get('nextns'), 'stats': st.get('stats'), 'stats_connues': bool(st)})
+    return {'liste': liste, 'duree_s': duree, 'duree_pag_s': duree_p, 'uptime_s': uptime_s,
+            'mapping': bool(inv['noms']), 'ts': ppf[-1][0] if ppf else prof[-1][0]}
+
+
+def sessions_profil(d):
+    b = [(ts, lignes_unl(t)) for ts, t in blocs(os.path.join(d, 'informix', 'profil_sessions.raw'))]
+    b = [x for x in b if x[1]]
+    if not b:
+        return None
+    champs = ('sid', 'user', 'hote', 'pid', 'pagreads', 'bufreads', 'isreads', 'seqscans', 'lockreqs', 'lockwts', 'tris', 'tris_disque')
+    conv = lambda x: dict(zip(champs, x[:4] + [entier(v) or 0 for v in x[4:12]]))
+    deb = {x[0]: conv(x) for x in b[0][1] if len(x) >= 12}
+    res = []
+    for x in b[-1][1]:
+        if len(x) < 12:
+            continue
+        e = conv(x)
+        p0 = deb.get(e['sid']) if len(b) > 1 else None
+        e['d_pagreads'] = e['pagreads'] - p0['pagreads'] if p0 and e['pagreads'] >= p0['pagreads'] else None
+        e['d_bufreads'] = e['bufreads'] - p0['bufreads'] if p0 and e['bufreads'] >= p0['bufreads'] else None
+        res.append(e)
+    return {'liste': res, 'duree_s': (b[-1][0] - b[0][0]).total_seconds() if len(b) > 1 else 0, 'ts': b[-1][0]}
+
+
+def ouverture_chunks(d):
+    res = []
+    for l in lire(os.path.join(d, 'statique', 'informix', 'chunks_ouverture.txt')).splitlines():
+        p = l.split('|')
+        if len(p) >= 5 and not l.startswith('#'):
+            res.append({'chunk': p[0], 'flags': p[2], 'o_direct': p[3] == '1', 'type': p[4]})
+    return res
+
+
+def buddy(t):
+    """Plus grand bloc libre (Ko) des zones Normal/DMA32 dans /proc/buddyinfo."""
+    plus_grand = None
+    for l in t.splitlines():
+        m = re.match(r'^Node\s+\d+,\s+zone\s+(\S+)\s+([\d\s]+)$', l.strip())
+        if m and m.group(1) in ('Normal', 'DMA32'):
+            cpt = [int(x) for x in m.group(2).split()]
+            ordre = max([i for i, n in enumerate(cpt) if n > 0] or [-1])
+            if ordre >= 0:
+                plus_grand = max(plus_grand or 0, 4 * 2 ** ordre)
+    return plus_grand
+
+
+def serie_buddy(d):
+    res = [{'ts': ts, 'bloc_ko': buddy(t)} for ts, t in blocs(os.path.join(d, 'series', 'buddyinfo.raw'))]
+    return [e for e in res if e['bloc_ko'] is not None]
+
+
+def classements(ob, n=15):
+    """Quatre classements du rapport de référence + verrous. Chaque entrée : (objet, valeur, part %, fréquence /s)."""
+    if not ob:
+        return {}
+    L, up = ob['liste'], ob.get('uptime_s') or 0
+    freq = lambda o, k: (o['d'][k] / ob['duree_s']) if ob['duree_s'] and k in o['d'] else ((o['c'][k] / up) if up else None)
+    res = {}
+    for cle, k, filtre in [('physiques', 'pagreads', None), ('logiques', 'bfrd', None), ('scans', 'seqsc', lambda o: o['type'] != 'index'),
+                           ('inverses', 'rvscn', None), ('verrous', 'lkrqs', None)]:
+        tot = sum(o['c'].get(k) or 0 for o in L)
+        lst = sorted([o for o in L if (o['c'].get(k) or 0) > 0 and (filtre is None or filtre(o))], key=lambda o: -o['c'][k])[:n]
+        res[cle] = {'total': tot, 'liste': [(o, o['c'][k], 100.0 * o['c'][k] / tot if tot else 0, freq(o, k)) for o in lst]}
+    return res
+
+
+def pages_par_scan(o):
+    """Taille réelle de la table si connue, sinon lectures logiques / scans (surestime si la table est aussi lue par index)."""
+    if o['pages']:
+        return o['pages']
+    return o['c']['bfrd'] / o['c']['seqsc'] if o['c'].get('seqsc') else None
+
+
+def regles_objets(s):
+    """Constats issus des profils par objet, des sessions et de l'inventaire. [(gravité, domaine, constat, preuve, recommandation)]"""
+    r, ob, inv = [], s.get('obj'), s.get('inv') or {}
+    cl = classements(ob)
+    nm = lambda o: '%s%s' % (o['nom'], ' (index de %s)' % o['table'] if o['type'] == 'index' else '')
+    if cl:
+        ph = cl['physiques']['liste']
+        if ph and len(ph) >= 2 and ph[0][2] + ph[1][2] >= 30:
+            r.append(('haute', 'Objets', 'Lectures physiques concentrées sur %s et %s' % (ph[0][0]['nom'], ph[1][0]['nom']),
+                      '%.0f %% des %s pages lues sur disque ; %s' % (ph[0][2] + ph[1][2], fmt_n(cl['physiques']['total']),
+                                                                    ' ; '.join('%s : %s pages, %s scans, hit ratio %s' % (
+                                                                        nm(o), fmt_n(v), fmt_n(o['c']['seqsc']), ('%.0f %%' % o['c']['rhit']) if o['c']['rhit'] is not None else '-')
+                                                                        for o, v, _p, _f in ph[:2])),
+                      'Parcours complets répétés de grandes tables que le cache ne peut absorber : trace SQL ciblée (sysadmin:task « set sql tracing ») pour identifier '
+                      'les requêtes et programmes, ajout des critères ou index manquants, contrôle des statistiques ; à défaut, exécution hors pointe ou sur le secondaire.'))
+        inv_l = cl['inverses']['liste']
+        if inv_l:
+            tot_f = sum(f or 0 for _o, _v, _p, f in inv_l[:2])
+            part2 = sum(p for _o, _v, p, _f in inv_l[:2])
+            if tot_f > 100 or part2 > 80 and cl['inverses']['total'] > 1e7:
+                r.append(('haute' if tot_f > 1000 else 'moyenne', 'Objets', 'Parcours inverses d\'index concentrés (%s)' % ', '.join(o['nom'] for o, _v, _p, _f in inv_l[:2]),
+                          '%.0f %% des %s parcours inverses, ≈ %s/s ; %s' % (part2, fmt_n(cl['inverses']['total']), fmt_n(tot_f), ' ; '.join(
+                              '%s : %.0f %% des accès en sens inverse' % (nm(o), 100.0 * v / o['c']['isrd']) for o, v, _p, _f in inv_l[:2] if o['c']['isrd'])),
+                          'Requêtes du type « dernière ligne pour une clé » (ORDER BY … DESC, MAX, FIRST 1) exécutées en boucle : les identifier, créer un index '
+                          'décroissant adapté, réécrire la requête ou conserver la valeur en mémoire côté programme.'))
+        for o in [o for o in ob['liste'] if o['type'] != 'index' and (o['c']['seqsc'] or 0) >= 10]:
+            pps = pages_par_scan(o)
+            if pps and pps >= 4000 and pps * o['c']['seqsc'] >= 1e8:
+                o['_cout'] = pps * o['c']['seqsc']
+        couteux = sorted([o for o in ob['liste'] if o.get('_cout')], key=lambda o: -o['_cout'])[:5]
+        if couteux:
+            r.append(('haute' if couteux[0]['_cout'] > 1e9 else 'moyenne', 'Objets', 'Scans séquentiels coûteux sur de grandes tables',
+                      ' ; '.join('%s : %s scans × %s pages, %s demandes de verrou' % (o['nom'], fmt_n(o['c']['seqsc']), fmt_n(pages_par_scan(o)), fmt_n(o['c']['lkrqs']))
+                                 for o in couteux),
+                      'Analyser les plans d\'exécution (SET EXPLAIN ON) des requêtes sur ces tables ; créer les index sur les critères de recherche. '
+                      'Un volume de verrous élevé sur des lectures signale des parcours sous verrou de ligne : revoir le niveau d\'isolation et les curseurs FOR UPDATE.'))
+        up = ob.get('uptime_s') or 0
+        fq = lambda o, k: (o['d'][k] / ob['duree_s']) if ob['duree_s'] and k in o['d'] else ((o['c'][k] / up) if up else 0)
+        moyens = [o for o in ob['liste'] if o['type'] != 'index' and fq(o, 'seqsc') >= 0.5 and 20 <= (pages_par_scan(o) or 0) < 4000]
+        if moyens:
+            moyens.sort(key=lambda o: -fq(o, 'seqsc') * pages_par_scan(o))
+            r.append(('moyenne', 'Objets', 'Scans fréquents de tables moyennes',
+                      ' ; '.join('%s : %s scans/s × %s pages' % (o['nom'], fmt_n(fq(o, 'seqsc')), fmt_n(pages_par_scan(o))) for o in moyens[:5]),
+                      'Chaque passage est peu coûteux mais la fréquence en fait un poste significatif : un index sur le critère de recherche ramène l\'accès à quelques pages.'))
+        petits = [o for o in ob['liste'] if o['type'] != 'index' and fq(o, 'seqsc') >= 2 and (pages_par_scan(o) or 99) <= 2]
+        if petits:
+            petits.sort(key=lambda o: -fq(o, 'seqsc'))
+            r.append(('info', 'Objets', 'Petites tables relues en boucle',
+                      ' ; '.join('%s : %s lectures/s' % (o['nom'], fmt_n(fq(o, 'seqsc'))) for o in petits[:5]),
+                      'Paramètres relus à chaque itération : les conserver en mémoire dans le programme (applicatif).'))
+        boucle = [o for o in ob['liste'] if o['type'] == 'index' and fq(o, 'isrd') >= 2000 and o['c']['isrd'] and o['c']['bfrd'] / o['c']['isrd'] <= 6]
+        if boucle:
+            boucle.sort(key=lambda o: -fq(o, 'isrd'))
+            r.append(('moyenne', 'Objets', 'Accès unitaires en boucle sur des index',
+                      ' ; '.join('%s : %s lectures ISAM/s (%s lectures logiques par lecture)' % (nm(o), fmt_n(fq(o, 'isrd')), fmt_n(o['c']['bfrd'] / o['c']['isrd'])) for o in boucle[:6]),
+                      'Le coût unitaire est normal, c\'est la fréquence qui pèse sur les VP CPU : remplacer les traitements ligne à ligne (FOREACH + requête par ligne) '
+                      'par des jointures ou un traitement ensembliste, mettre en cache les données de référence (applicatif).'))
+        lk = [o for o, v, _p, f in cl['verrous']['liste'] if (f or 0) > 2000 or v > 5e8]
+        if lk:
+            r.append(('moyenne', 'Objets', 'Volume massif de demandes de verrou',
+                      ' ; '.join('%s : %s demandes (%s/s)' % (nm(o), fmt_n(o['c']['lkrqs']), fmt_n(fq(o, 'lkrqs'))) for o in lk[:5]),
+                      'Volume inhabituel pour des accès majoritairement en lecture : vérifier le niveau d\'isolation (REPEATABLE READ ?), les curseurs FOR UPDATE '
+                      'et USELASTCOMMITTED ; DIRTY READ ou COMMITTED READ LAST COMMITTED sur les lectures de consultation.'))
+        bas = [o for o in ob['liste'] if o['c']['rhit'] is not None and o['c']['rhit'] < 85 and (o['c'].get('pagreads') or 0) > 1e6]
+        if bas:
+            r.append(('info', 'Objets', 'Hit ratio bas sur des objets lus intensivement',
+                      ' ; '.join('%s : %.0f %%' % (nm(o), o['c']['rhit']) for o in bas[:5]),
+                      'Accès dispersés que le cache absorbe mal : analyser les requêtes d\'accès et l\'ordre des colonnes de l\'index.'))
+        # statistiques de l'optimiseur sur les objets en tête des classements
+        cibles, vus = [], set()
+        for k in ('physiques', 'logiques', 'scans', 'inverses'):
+            for o, _v, _p, _f in cl[k]['liste'][:10]:
+                if o['table'] not in vus:
+                    vus.add(o['table'])
+                    cibles.append(o)
+        if inv.get('stats'):
+            ref = s['fin']
+            vieilles = []
+            for o in cibles:
+                st = inv['stats'].get((o['base'], o['table']))
+                if st is None:
+                    continue
+                if st['stats'] is None or (ref - st['stats']).days > 30:
+                    vieilles.append((o['table'], st['stats']))
+            jamais = sum(1 for v in inv['stats'].values() if v['stats'] is None and (v['nrows'] or 0) > 1000)
+            if vieilles:
+                r.append(('haute', 'Objets', 'Statistiques de l\'optimiseur absentes ou anciennes sur des tables sollicitées',
+                          ' ; '.join('%s : %s' % (t, d.strftime('%d/%m/%Y') if d else 'jamais') for t, d in vieilles[:10]) +
+                          ((' ; %d table(s) de plus de 1 000 lignes sans statistiques' % jamais) if jamais else ''),
+                          'Des statistiques obsolètes produisent des plans erronés (scans complets au lieu d\'index). Relancer UPDATE STATISTICS (MEDIUM sur la table, '
+                          'HIGH sur les colonnes de tête des index) hors pointe, puis planifier la tâche (AUTO_STAT_MODE / tâche sysadmin « Auto Update Statistics »).'))
+            elif cibles:
+                r.append(('info', 'Objets', 'Statistiques récentes sur les tables les plus sollicitées', '%d table(s) vérifiée(s)' % len(cibles),
+                          'Les plans erronés dus aux statistiques sont peu probables : analyser directement les requêtes (SET EXPLAIN).'))
+    se = s.get('ses_prof')
+    if se and se['liste']:
+        cle = 'd_pagreads' if se['duree_s'] else 'pagreads'
+        tot = sum(e[cle] or 0 for e in se['liste'])
+        top = max(se['liste'], key=lambda e: e[cle] or 0)
+        if tot and (top[cle] or 0) >= 0.4 * tot and top[cle] > 1e5:
+            r.append(('haute', 'Objets', 'Une session concentre les lectures physiques (session %s)' % top['sid'],
+                      'session %s, utilisateur %s, poste %s, processus %s : %s pages lues (%.0f %% de toutes les sessions%s), %s scans séquentiels' % (
+                          top['sid'], top['user'], top['hote'], top['pid'], fmt_n(top[cle]), 100.0 * top[cle] / tot,
+                          ' sur la fenêtre' if cle == 'd_pagreads' else '', fmt_n(top['seqscans'])),
+                      'Identifier le programme (ps sur le poste client, onstat -g ses %s, onstat -g sql %s) et tracer ses requêtes '
+                      '(EXECUTE FUNCTION sysadmin:task(\'set sql user tracing on\', %s)).' % (top['sid'], top['sid'], top['sid'])))
+        tris = sum(e['tris'] for e in se['liste'])
+        dsk = sum(e['tris_disque'] for e in se['liste'])
+        s['_tris'] = (tris, dsk)
+    for db in inv.get('dbspaces', []):
+        if db['temp'] or db['blob']:
+            continue
+        if db['libre_pct'] < 1:
+            g = 'critique'
+        elif db['libre_pct'] < 5:
+            g = 'haute'
+        elif db['libre_pct'] < 10:
+            g = 'moyenne'
+        else:
+            continue
+        r.append((g, 'Stockage Informix', 'Dbspace %s presque plein' % db['nom'],
+                  '%.1f %% d\'espace libre (%s pages libres sur %s, %d chunk(s))' % (db['libre_pct'], fmt_n(db['libres']), fmt_n(db['pages']), db['chunks']),
+                  'Les allocations d\'extents peuvent échouer et provoquer des erreurs applicatives : ajouter un chunk (onspaces -a) ou activer l\'extension '
+                  'automatique via un storage pool (SP_AUTOEXPAND).'))
+    ext = sorted([(k, v) for k, v in inv.get('tailles', {}).items() if v['nextns'] >= 50], key=lambda x: -x[1]['nextns'])
+    if ext:
+        r.append(('info', 'Stockage Informix', 'Tables très fragmentées en extents',
+                  ' ; '.join('%s : %d extents' % (k[1], v['nextns']) for k, v in ext[:6]),
+                  'Au-delà de quelques dizaines d\'extents, les parcours sont moins efficaces : revoir EXTENT SIZE / NEXT SIZE et réorganiser hors production (ALTER FRAGMENT … INIT).'))
+    return r
+
+
+def fmt_n(v):
+    if v is None:
+        return '-'
+    v = float(v)
+    for lim, div, suf in ((1e9, 1e9, ' Md'), (1e6, 1e6, ' M'), (1e4, 1e3, ' k')):
+        if abs(v) >= lim:
+            return ('%.1f' % (v / div)).replace('.', ',') + suf
+    return ('%.0f' % v) if abs(v) >= 10 or v == int(v) else ('%.1f' % v).replace('.', ',')
+
+
+# --------------------------------------------------------------------------------------------
 # Chargement d'un serveur
 # --------------------------------------------------------------------------------------------
 def charger(d):
@@ -538,6 +907,7 @@ def charger(d):
     s['disques'], s['dm'], s['reseau'], s['latence'] = serie_disques(d), noms_dm(d), serie_reseau(d), serie_latence(d)
     s['irium'], s['jobs'] = serie_irium(d)
     s['top'], s['etat_d'] = top_processus(d), etat_d(d)
+    s['buddy'] = serie_buddy(d)
     tous = [e['ts'] for e in s['cpu']] or [dt.datetime.now()]
     s['debut'], s['fin'] = min(tous), max(tous)
     s['marqueurs'] = []
@@ -558,6 +928,10 @@ def charger(d):
         s['repl'], s['backlog'] = replication(d)
         s['conf'] = onconfig(d)
         s['journal'], ckp_log = journal_moteur(d, s['debut'], s['fin'])
+        s['inv'] = inventaire(d)
+        ups = [e['uptime_s'] for e in s['entete'] if e.get('uptime_s')]
+        s['obj'] = objets(d, s['inv'], ups[-1] if ups else None)
+        s['ses_prof'], s['dio'] = sessions_profil(d), ouverture_chunks(d)
         if not s['ckp']:
             s['ckp'] = ckp_log
     return s
@@ -635,6 +1009,23 @@ def diagnostic(s):
             'activer RESIDENT pour verrouiller la mémoire partagée.')
     elif mem['min'] is not None and mem['min'] < 5:
         add('moyenne', 'Mémoire', 'Mémoire disponible très faible', 'minimum %.1f %%' % mem['min'], 'Surveiller le risque de swap et d\'OOM killer.')
+    cps, als = stats([e.get('compact_stall_s') for e in s['mem']]), stats([e.get('allocstall_s') for e in s['mem']])
+    rec = stats([e.get('recup_mo_s') for e in s['mem']])
+    bud = stats([e['bloc_ko'] for e in s.get('buddy', [])])
+    s['_pression_mem'] = (cps['p95'] or 0) > 1 or (als['p95'] or 0) > 10 or (bud['min'] is not None and bud['min'] <= 16)
+    if s['_pression_mem']:
+        add('haute' if (cps['p95'] or 0) > 10 or (als['p95'] or 0) > 100 else 'moyenne', 'Mémoire', 'Pression mémoire du noyau (récupération et compactage)',
+            'compactages bloquants p95 %s/s, allocations bloquantes p95 %s/s, recyclage du cache %s Mo/s en moyenne (max %s) ; plus petit « plus grand bloc libre » observé : %s Ko ; '
+            'cache de fichiers %s Mo' % (fmt_n(cps['p95']), fmt_n(als['p95']), fmt_n(rec['moy']), fmt_n(rec['max']), fmt_n(bud['min']),
+                                       fmt_n(s['mem'][-1]['cache_mo'] if s['mem'] else None)),
+            'Les lectures disque d\'Informix transitent par le cache de pages du noyau, qui recycle et fragmente la mémoire ; les processus système (NFS…) se bloquent en '
+            'compactage. Désactiver les Transparent Huge Pages, porter vm.min_free_kbytes à 256 Mo, activer réellement l\'I/O directe sur les chunks (DIRECT_IO 1) '
+            'et surtout réduire les lectures physiques (classements des objets).')
+    mfk = re.search(r'vm.min_free_kbytes = (\d+)', lire(os.path.join(s['dossier'], 'statique', 'noyau.txt')))
+    ram_tot = s['mem'][-1]['total_mo'] if s['mem'] else 0
+    if s['informix'] and mfk and ram_tot >= 30000 and int(mfk.group(1)) < 131072:
+        add('moyenne' if s['_pression_mem'] else 'info', 'Système', 'Réserve mémoire du noyau faible', 'vm.min_free_kbytes = %s Ko pour %.0f Go de RAM' % (mfk.group(1), ram_tot / 1024),
+            'Porter vm.min_free_kbytes à 262144 (256 Mo) via /etc/sysctl.d : réduit les allocations bloquantes des processus système.')
     ret = stats([e['retrans_pct'] for e in s['reseau']])
     if ret['p95'] is not None and ret['p95'] > 1:
         add('moyenne' if ret['p95'] < 3 else 'haute', 'Réseau', 'Retransmissions TCP', 'p95 %.2f %% des segments retransmis' % ret['p95'],
@@ -758,11 +1149,6 @@ def diagnostic(s):
         if (bl['max'] or 0) > 0:
             add('moyenne', 'Réplication', 'Retard de réplication (backlog)', 'backlog max %d' % bl['max'],
                 'La réplica ne suit pas : réseau ou disques de la réplica lents.')
-        scope = s['conf'].get('HDR_TXN_SCOPE', '')
-        if scope.upper() in ('FULL_SYNC', 'NEAR_SYNC') and 'principale' in s['roles']:
-            add('info', 'Réplication', 'Réplication HDR synchrone (HDR_TXN_SCOPE=%s)' % scope,
-                'chaque validation attend l\'accusé de la réplica',
-                'Toute lenteur réseau ou disque de la réplica se répercute sur les validations de la base principale : comparer avec le rapport de la réplica.')
         crit = [x for x in s['journal'] if x[1] in ('critique', 'haute')]
         if crit:
             add('haute', 'Informix', 'Messages importants dans le journal du moteur', '%d message(s), ex. %s : %s' % (len(crit), crit[0][0].strftime('%H:%M'), crit[0][2][:120]),
@@ -775,8 +1161,16 @@ def diagnostic(s):
                 'RESIDENT -1 empêche la mise en swap de la mémoire partagée (avec suffisamment de RAM).')
         if not cf.get('DBSPACETEMP'):
             add('info', 'Informix', 'Pas de DBSPACETEMP', 'DBSPACETEMP absent', 'Les tris et tables temporaires vont dans le rootdbs : définir des dbspaces temporaires dédiés.')
+        for x in regles_objets(s):
+            add(*x)
         ram = s['mem'][-1]['total_mo'] if s['mem'] else 0
-        for g, t, pv, rec in revue_configuration(cf, ram, s['ncpu'], s.get('nb_chunks', 0), s.get('logs_h')):
+        fich = [x for x in s.get('dio', []) if x['type'] == 'fichier']
+        mes = {'contention': any(x[2] == 'Contention sur les verrous' for x in c), 'att_G': attG['p95'] or 0, 'pression_mem': s.get('_pression_mem'),
+               'chunks_fichiers': len(fich), 'chunks_sans_odirect': len([x for x in fich if not x['o_direct']]), 'tris': s.get('_tris'),
+               'cache_lect': cl['moy'], 'gros_scans': [x for x in c if x[2] == 'Scans séquentiels coûteux sur de grandes tables'],
+               'ping_ms': stats([e['ping_ms'] for e in s['latence']])['moy'],
+               'hdr_actif': any(e[2].lower() == 'on' for e in s['repl']), 'nb_rss': nb_rss(s['dossier'])}
+        for g, t, pv, rec in revue_configuration(cf, ram, s['ncpu'], s.get('nb_chunks', 0), s.get('logs_h'), mes):
             add(g, 'Configuration', t, pv, rec)
     c.sort(key=lambda x: GRAV[x[0]][2])
     return c
@@ -787,9 +1181,10 @@ def kv_option(v, cle):
     return m.group(1) if m else None
 
 
-def revue_configuration(cf, ram_mo, ncpu, nb_chunks=0, logs_h=None):
-    """Lecture experte de l'ONCONFIG au regard du serveur (RAM, cœurs). Retourne [(gravité, constat, preuve, recommandation)]."""
-    r = []
+def revue_configuration(cf, ram_mo, ncpu, nb_chunks=0, logs_h=None, mes=None):
+    """Lecture experte de l'ONCONFIG au regard du serveur (RAM, cœurs) et, si fournies, des mesures de l'audit
+    (mes : contention, attentes de log, pression mémoire, ouverture des chunks, tris...). Retourne [(gravité, constat, preuve, recommandation)]."""
+    r, mes = [], mes or {}
     ent = lambda k, d=None: (lambda x: int(x) if re.match(r'^-?\d+$', x or '') else d)(str(cf.get(k, '')).strip().strip('"'))
     # mémoire partagée
     bp_mo = 0.0
@@ -833,12 +1228,19 @@ def revue_configuration(cf, ram_mo, ncpu, nb_chunks=0, logs_h=None):
             r.append(('info', 'VP CPU', '%d VP CPU + %d VP NET pour %d CPU' % (cpu_vp, net_vp, ncpu), 'Cohérent ; confirmer avec l\'occupation des VP et la file des threads prêts.'))
     ulc = str(cf.get('USELASTCOMMITTED', '')).strip('"').upper()
     if ulc in ('NONE', '', '0'):
-        r.append(('moyenne', 'Lecture de la dernière version validée désactivée', 'USELASTCOMMITTED %s' % (cf.get('USELASTCOMMITTED') or 'absent'),
+        r.append(('haute' if mes.get('contention') else 'moyenne', 'Lecture de la dernière version validée désactivée',
+                  'USELASTCOMMITTED %s%s' % (cf.get('USELASTCOMMITTED') or 'absent', ' ; confirmé par la mesure : contention sur les verrous pendant l\'audit' if mes.get('contention') else ''),
                   'En COMMITTED READ, un lecteur attend la fin des transactions qui modifient les lignes (batchs ipscrond). « COMMITTED READ » réduit fortement '
                   'ces attentes de verrous : à valider avec l\'éditeur IRIUM et à tester sur un environnement de recette.'))
     scope, dri = str(cf.get('HDR_TXN_SCOPE', '')).upper(), cf.get('DRINTERVAL')
-    if scope in ('NEAR_SYNC', 'FULL_SYNC') or str(dri) == '-1':
-        r.append(('moyenne', 'Réplication HDR synchrone', 'HDR_TXN_SCOPE %s, DRINTERVAL %s, DRTIMEOUT %s' % (scope or '-', dri, cf.get('DRTIMEOUT', '-')),
+    if mes.get('nb_rss') and not mes.get('hdr_actif') and (scope in ('NEAR_SYNC', 'FULL_SYNC') or str(dri) == '-1'):
+        r.append(('info', 'Paramètres HDR sans effet : secondaire RSS', 'HDR_TXN_SCOPE %s, DRINTERVAL %s ; %d serveur(s) RSS, pas de paire HDR active' % (scope or '-', dri, mes['nb_rss']),
+                  'La réplication RSS est toujours asynchrone : les validations n\'attendent pas le secondaire. Les lenteurs ne viennent pas de la réplication ; '
+                  'LOG_INDEX_BUILDS 1 est requis par RSS. Surveiller seulement le retard du secondaire (onstat -g rss).'))
+    elif scope in ('NEAR_SYNC', 'FULL_SYNC') or str(dri) == '-1':
+        r.append(('haute' if mes.get('att_G', 0) >= 2 else 'moyenne', 'Réplication HDR synchrone',
+                  'HDR_TXN_SCOPE %s, DRINTERVAL %s, DRTIMEOUT %s%s' % (scope or '-', dri, cf.get('DRTIMEOUT', '-'),
+                                                                    ' ; mesuré : sessions en attente d\'écriture du log p95 %.0f' % mes['att_G'] if mes.get('att_G', 0) >= 2 else ''),
                   'Chaque validation attend la réplica (NEAR_SYNC : réception du log). La latence réseau principale ↔ réplica et la charge de la réplica s\'ajoutent '
                   'à chaque COMMIT : mesurer le ping entre les deux serveurs et comparer avec le rapport de la réplica. ASYNC supprime cette attente au prix d\'un RPO non nul.'))
     if str(cf.get('LTAPEDEV', '')).strip() == '/dev/null':
@@ -856,15 +1258,30 @@ def revue_configuration(cf, ram_mo, ncpu, nb_chunks=0, logs_h=None):
         r.append(('info', 'Logs logiques de petite taille', 'LOGSIZE %s Ko × %s logs' % (cf.get('LOGSIZE'), cf.get('LOGFILES')),
                   'Vérifier le nombre de bascules par heure (supervision > 30 min) ; des logs de 50 à 100 Mo sont courants.'))
     nonpdq = ent('DS_NONPDQ_QUERY_MEM')
+    tris, dsk = mes.get('tris') or (0, 0)
     if nonpdq is not None and nonpdq < 1024:
-        r.append(('info', 'Mémoire de tri par requête faible', 'DS_NONPDQ_QUERY_MEM %d Ko (PDQ désactivé : MAX_PDQPRIORITY %s)' % (nonpdq, cf.get('MAX_PDQPRIORITY', '-')),
+        r.append(('moyenne' if tris and dsk > 0.05 * tris else 'info', 'Mémoire de tri par requête faible',
+                  'DS_NONPDQ_QUERY_MEM %d Ko (PDQ désactivé : MAX_PDQPRIORITY %s)%s' % (nonpdq, cf.get('MAX_PDQPRIORITY', '-'),
+                                                                                   ' ; mesuré : %s tris dont %s sur disque (%.0f %%)' % (fmt_n(tris), fmt_n(dsk), 100.0 * dsk / tris) if tris else ''),
                   'Les tris et jointures par hachage débordent vite dans les dbspaces temporaires : comparer « tris » et « tris disque » (sysmaster). 2 à 8 Mo sont fréquents en OLTP.'))
     if str(cf.get('OPTCOMPIND', '')) == '2':
-        r.append(('info', 'Optimiseur orienté coût global', 'OPTCOMPIND 2',
+        r.append(('moyenne' if mes.get('gros_scans') else 'info', 'Optimiseur orienté coût global',
+                  'OPTCOMPIND 2%s' % (' ; mesuré : scans séquentiels coûteux sur de grandes tables' if mes.get('gros_scans') else ''),
                   'Autorise les jointures par hachage et balayages complets ; en OLTP, 0 favorise les index. À ne changer qu\'après analyse des plans des requêtes lentes.'))
     dio = str(cf.get('DIRECT_IO', '')).strip()
-    if dio and dio not in ('0', '1'):
-        r.append(('info', 'Valeur DIRECT_IO inhabituelle', 'DIRECT_IO %s' % dio, 'Valeurs documentées : 0 ou 1. Vérifier dans le journal du moteur (et onstat -g cfg) la valeur réellement retenue.'))
+    nf, nsd = mes.get('chunks_fichiers', 0), mes.get('chunks_sans_odirect', 0)
+    if nf and nsd and dio not in ('', '0'):
+        r.append(('haute' if mes.get('pression_mem') else 'moyenne', 'DIRECT_IO configuré mais inactif sur les chunks',
+                  'DIRECT_IO %s dans l\'ONCONFIG, mais %d chunk(s) en fichier sur %d ouverts sans O_DIRECT%s' % (
+                      dio, nsd, nf, ' ; mesuré : pression mémoire du noyau' if mes.get('pression_mem') else ''),
+                  'Les lectures Informix passent par le cache de pages du système (double mise en cache, recyclage et fragmentation de la mémoire). '
+                  'Positionner DIRECT_IO 1 et redémarrer l\'instance (fenêtre de maintenance) ; contrôler ensuite le drapeau O_DIRECT (rapport suivant).'))
+    elif nf and nsd and dio in ('', '0'):
+        r.append(('moyenne' if mes.get('pression_mem') else 'info', 'I/O directe non utilisée', 'DIRECT_IO %s, %d chunk(s) en fichier' % (dio or 'absent', nf),
+                  'DIRECT_IO 1 évite la double mise en cache des chunks (cache Informix + cache de pages du noyau). Redémarrage de l\'instance requis.'))
+    elif dio and dio not in ('0', '1'):
+        r.append(('info', 'Valeur DIRECT_IO inhabituelle', 'DIRECT_IO %s%s' % (dio, ' ; O_DIRECT actif sur les %d chunk(s) en fichier' % nf if nf else ''),
+                  'Valeurs documentées : 0 ou 1. Vérifier dans le journal du moteur (et onstat -g cfg) la valeur réellement retenue.'))
     cl = ent('CLEANERS')
     if cl and nb_chunks and cl < nb_chunks:
         r.append(('moyenne', 'Moins de CLEANERS que de chunks', 'CLEANERS %d pour %d chunks' % (cl, nb_chunks), 'Un thread de nettoyage par chunk actif est la règle usuelle.'))
@@ -1188,6 +1605,7 @@ def section_informix(s):
     if s['journal']:
         o.append('<h3>Journal du moteur (messages notables)</h3>' + tableau(['Heure', 'Gravité', 'Message'],
                                                                          [[h.strftime('%d/%m %H:%M:%S'), badge(g), '<span class="mono">%s</span>' % esc(m)] for h, g, m in s['journal'][:200]]))
+    o.append(section_objets(s))
     sqlb = blocs(os.path.join(s['dossier'], 'informix', 'sql_sysmaster.raw'))
     if sqlb:
         o.append('<details open><summary>Sessions et tables les plus sollicitées (sysmaster, %s)</summary><pre>%s</pre></details>' % (sqlb[-1][0].strftime('%H:%M'), esc(sqlb[-1][1][:40000])))
@@ -1205,6 +1623,183 @@ def section_informix(s):
     return ''.join(o)
 
 
+def pct(v):
+    return '-' if v is None else ('%.1f %%' % v).replace('.', ',')
+
+
+def lignes_classements(s):
+    """Tableaux des classements (aussi utilisés pour l'export CSV) : {clé: (titre, en-têtes, lignes, note)}."""
+    ob, cl = s.get('obj'), classements(s.get('obj'), 20)
+    if not cl:
+        return {}
+    fen = ob['duree_s']
+    nm = lambda o: '%s%s' % (o['nom'], ' (index de %s)' % o['table'] if o['type'] == 'index' and o['table'] != o['nom'] else (' (index)' if o['type'] == 'index' else ''))
+    dl = lambda o, k: o['d'].get(k)
+    fq = lambda f: ('%s /s' % fmt_n(f)) if f is not None else '-'
+    hit = lambda o: '%.0f %%' % o['c']['rhit'] if o['c']['rhit'] is not None else '-'
+    sfen = ' sur %s min' % fmt_n(fen / 60.0) if fen else ''
+    t = {}
+    t['physiques'] = ('Classement 1 – Lectures physiques (pages lues sur disque)', ['N°', 'Objet', 'Pages lues (cumul)', 'Part', 'Scans séq.', 'Pages lues' + sfen, 'Hit ratio'],
+                      [[str(i + 1), nm(o), fmt_n(v), pct(p), fmt_n(o['c']['seqsc']), fmt_n(dl(o, 'pagreads')), hit(o)] for i, (o, v, p, _f) in enumerate(cl['physiques']['liste'])],
+                      'Source : sysmaster:sysptprof (pagreads) et onstat -g ppf. Total : %s pages.' % fmt_n(cl['physiques']['total']))
+    t['logiques'] = ('Classement 2 – Lectures logiques (pages lues en mémoire, coût CPU)', ['N°', 'Objet', 'Lectures logiques', 'Part', 'Lectures ISAM', 'Logiques / ISAM', 'Scans séq.', 'Verrous', 'Profil'],
+                     [[str(i + 1), nm(o), fmt_n(v), pct(p), fmt_n(o['c']['isrd']), ('%.1f' % (v / o['c']['isrd'])).replace('.', ',') if o['c']['isrd'] else '-',
+                       fmt_n(o['c']['seqsc']), fmt_n(o['c']['lkrqs']), profil_acces(o)] for i, (o, v, p, _f) in enumerate(cl['logiques']['liste'])],
+                     'Source : onstat -g ppf (bfrd). Total : %s.' % fmt_n(cl['logiques']['total']))
+    t['scans'] = ('Classement 3 – Scans séquentiels', ['N°', 'Table', 'Scans séq.', 'Part', 'Fréquence', 'Pages par scan', 'Demandes de verrou', 'Extents'],
+                  [[str(i + 1), nm(o), fmt_n(v), pct(p), fq(f), fmt_n(pages_par_scan(o)), fmt_n(o['c']['lkrqs']), fmt_n(o['extents'])] for i, (o, v, p, f) in enumerate(cl['scans']['liste'])],
+                  'Pages par scan : taille réelle de la table (sysptnhdr) si connue, sinon lectures logiques / scans. Total : %s scans.' % fmt_n(cl['scans']['total']))
+    t['inverses'] = ('Classement 4 – Parcours inverses d\'index', ['N°', 'Index', 'Parcours inverses', 'Part', 'Fréquence', 'Lectures ISAM', 'Part des accès inverses', 'Hit ratio'],
+                     [[str(i + 1), nm(o), fmt_n(v), pct(p), fq(f), fmt_n(o['c']['isrd']), pct(100.0 * v / o['c']['isrd']) if o['c']['isrd'] else '-', hit(o)]
+                      for i, (o, v, p, f) in enumerate(cl['inverses']['liste'])],
+                     'Source : onstat -g ppf (rvscn). Un parcours inverse répond à ORDER BY … DESC, MAX ou FIRST 1 … DESC. Total : %s.' % fmt_n(cl['inverses']['total']))
+    t['verrous'] = ('Demandes de verrou par objet', ['N°', 'Objet', 'Demandes', 'Part', 'Fréquence', 'Attentes', 'Lectures ISAM'],
+                    [[str(i + 1), nm(o), fmt_n(v), pct(p), fq(f), fmt_n(o['c']['lkwts']), fmt_n(o['c']['isrd'])] for i, (o, v, p, f) in enumerate(cl['verrous']['liste'])],
+                    'Source : onstat -g ppf (lkrqs, lkwts).')
+    se = s.get('ses_prof')
+    if se and se['liste']:
+        L = sorted(se['liste'], key=lambda e: -((e['d_pagreads'] if se['duree_s'] else e['pagreads']) or 0))[:20]
+        t['sessions'] = ('Sessions les plus consommatrices', ['Session', 'Utilisateur', 'Poste', 'PID client', 'Pages lues (cumul)', 'Pages lues sur la fenêtre',
+                                                              'Lectures logiques', 'Scans séq.', 'Demandes de verrou', 'Tris (dont disque)'],
+                         [[e['sid'], e['user'], e['hote'], e['pid'], fmt_n(e['pagreads']), fmt_n(e['d_pagreads']), fmt_n(e['bufreads']), fmt_n(e['seqscans']),
+                           fmt_n(e['lockreqs']), '%s (%s)' % (fmt_n(e['tris']), fmt_n(e['tris_disque']))] for e in L],
+                         'Source : sysmaster:syssesprof + syssessions.')
+    return t
+
+
+def profil_acces(o):
+    c = o['c']
+    if o['type'] == 'index' and c['isrd'] and c['bfrd'] / c['isrd'] <= 6:
+        return 'Accès unitaires répétés'
+    if c['seqsc'] and (pages_par_scan(o) or 0) > 1000:
+        return 'Scans complets répétés' + (', verrouillage massif' if c['lkrqs'] > 1e8 else '')
+    if c['lkrqs'] > 5e8:
+        return 'Verrouillage massif'
+    if o['type'] != 'index' and not c['seqsc']:
+        return 'Lue par index'
+    return '-'
+
+
+def section_objets(s):
+    t = lignes_classements(s)
+    o = []
+    if t:
+        ob = s['obj']
+        o.append('<h3>Objets les plus coûteux</h3><p class="d">Compteurs cumulés depuis le démarrage de l\'instance (%s), et deltas sur la fenêtre de l\'audit (%s). '
+                 '%s</p>' % ('%s jours' % fmt_n(ob['uptime_s'] / 86400.0) if ob.get('uptime_s') else 'durée inconnue',
+                             '%s min' % fmt_n(ob['duree_s'] / 60.0) if ob['duree_s'] else 'un seul relevé',
+                             '' if ob['mapping'] else '<b>Noms des partitions non résolus</b> (requêtes sysmaster désactivées) : identifiants hexadécimaux affichés.'))
+        for k in ('physiques', 'logiques', 'scans', 'inverses', 'verrous', 'sessions'):
+            if k in t:
+                titre, ent, lignes, note = t[k]
+                o.append('<details%s><summary>%s</summary>%s<p class="d">%s</p></details>' % (
+                    ' open' if k in ('physiques', 'inverses') else '', esc(titre), tableau(ent, [[esc(x) for x in l] for l in lignes]), esc(note)))
+    inv = s.get('inv') or {}
+    if inv.get('dbspaces'):
+        o.append('<h3>Remplissage des dbspaces</h3>' + tableau(['Dbspace', 'Type', 'Chunks', 'Pages', 'Pages libres', 'Libre'],
+                 [[esc(d['nom']), 'temporaire' if d['temp'] else ('blobspace' if d['blob'] else 'données'), str(d['chunks']), fmt_n(d['pages']), fmt_n(d['libres']),
+                   ('<b style="color:#d03b3b">%s</b>' if d['libre_pct'] < 5 and not d['temp'] else '%s') % pct(d['libre_pct'])]
+                  for d in sorted(inv['dbspaces'], key=lambda d: d['libre_pct'])]))
+    if s.get('dio'):
+        o.append('<details><summary>Ouverture des chunks (O_DIRECT)</summary>%s</details>' % tableau(['Chunk', 'Type', 'Drapeaux', 'O_DIRECT'],
+                 [['<span class="mono">%s</span>' % esc(x['chunk']), esc(x['type']), esc(x['flags']), 'oui' if x['o_direct'] else '<b>non</b>'] for x in s['dio']]))
+    return ''.join(o)
+
+
+PRIO = {'critique': 'Immédiat', 'haute': 'P1', 'moyenne': 'P2', 'info': 'P3'}
+NATURE = {'CPU': 'Système', 'Disques': 'Système', 'Mémoire': 'Système', 'Système': 'Système', 'Virtualisation': 'Système', 'Réseau': 'Système',
+          'Informix': 'Base de données', 'Réplication': 'Base de données', 'Stockage Informix': 'Base de données',
+          'Configuration': 'Configuration Informix (ONCONFIG)', 'Objets': 'Base de données et applicatif'}
+
+
+def plan_recommandations(constats):
+    """Constats → plan d'actions priorisé (sans les simples confirmations « cohérent »)."""
+    plan = []
+    for c in constats:
+        nom, g, dom, t, preuve, reco = c
+        if reco.startswith('Cohérent') or (g == 'info' and dom == 'Configuration' and t in ('VP CPU', 'Dimensionnement mémoire')):
+            continue
+        plan.append({'prio': PRIO[g], 'grav': g, 'serveur': nom, 'nature': NATURE.get(dom, dom), 'domaine': dom, 'constat': t, 'preuve': preuve, 'action': reco})
+    ordre_n = {'Configuration Informix (ONCONFIG)': 2, 'Base de données': 1, 'Base de données et applicatif': 0, 'Système': 3}
+    plan.sort(key=lambda x: (GRAV[x['grav']][2], ordre_n.get(x['nature'], 9)))
+    for i, x in enumerate(plan):
+        x['ref'] = 'R%02d' % (i + 1)
+    return plan
+
+
+def indicateurs_reference(serveurs):
+    """Indicateurs globaux à comparer avant / après correction."""
+    res = []
+    for s in serveurs:
+        ch = stats([e['load1'] for e in s['charge']])
+        cpu = stats([e['user'] + e['sys'] for e in s['cpu']])
+        l = [('Load average', '%s (max %s)' % (fmt_n(ch['moy']), fmt_n(ch['max']))), ('CPU utilisé', '%s %% (p95 %s %%)' % (fmt_n(cpu['moy']), fmt_n(cpu['p95'])))]
+        if s['informix'] and s['profil']:
+            br, dr = stats([e['bufreads_s'] for e in s['profil']]), stats([e['dskreads_s'] for e in s['profil']])
+            l += [('Lectures logiques /s', '%s (max %s)' % (fmt_n(br['moy']), fmt_n(br['max']))),
+                  ('Lectures disque Informix /s', '%s (max %s)' % (fmt_n(dr['moy']), fmt_n(dr['max']))),
+                  ('Taux de lecture en cache', pct(stats([e['cache_lect'] for e in s['profil']])['moy'])),
+                  ('Attentes de verrou /min', fmt_n(stats([e['lockwts_min'] for e in s['profil']])['moy'])),
+                  ('Scans séquentiels /min', fmt_n(stats([e['seqscans_min'] for e in s['profil']])['moy']))]
+        rec = stats([e.get('recup_mo_s') for e in s['mem']])
+        if rec['moy'] is not None:
+            l.append(('Recyclage du cache noyau', '%s Mo/s' % fmt_n(rec['moy'])))
+        res.append((s['nom'], l))
+    return res
+
+
+def exporter_csv(dossier, plan, serveurs):
+    """Inventaire au format CSV (séparateur « ; », UTF-8 avec BOM : ouverture directe dans Excel)."""
+    os.makedirs(dossier, exist_ok=True)
+    ecr = lambda nom, ent, lignes: _csv(os.path.join(dossier, nom), ent, lignes)
+    ecr('00_plan_recommandations.csv', ['Priorité', 'Réf.', 'Serveur', 'Nature', 'Constat', 'Preuves', 'Action recommandée', 'Responsable', 'Échéance', 'Statut'],
+        [[x['prio'], x['ref'], x['serveur'], x['nature'], x['constat'], x['preuve'], x['action'], '', '', 'À faire'] for x in plan])
+    for s in serveurs:
+        for k, (_titre, ent, lignes, _n) in sorted(lignes_classements(s).items()):
+            ecr('%s_%s.csv' % (s['nom'], k), ent, lignes)
+        inv = s.get('inv') or {}
+        if inv.get('stats'):
+            ecr('%s_statistiques.csv' % s['nom'], ['Base', 'Table', 'Lignes', 'Pages', 'Dernières statistiques'],
+                [[b, t, fmt_n(v['nrows']), fmt_n(v['npused']), v['stats'].strftime('%d/%m/%Y') if v['stats'] else 'jamais']
+                 for (b, t), v in sorted(inv['stats'].items(), key=lambda x: -(x[1]['npused'] or 0))])
+        if inv.get('dbspaces'):
+            ecr('%s_dbspaces.csv' % s['nom'], ['Dbspace', 'Temporaire', 'Pages', 'Pages libres', '% libre'],
+                [[d['nom'], 'oui' if d['temp'] else 'non', '%.0f' % d['pages'], '%.0f' % d['libres'], ('%.2f' % d['libre_pct']).replace('.', ',')] for d in inv['dbspaces']])
+
+
+def _csv(chemin, ent, lignes):
+    with io.open(chemin, 'w', encoding='utf-8-sig', newline='') as f:
+        w = csv.writer(f, delimiter=';')
+        w.writerow(ent)
+        for l in lignes:
+            w.writerow([re.sub(r'<[^>]+>', '', str(x)) for x in l])
+
+
+def section_recommandations(plan, serveurs, dossier_csv):
+    o = ['<section id="reco"><h2>Recommandations</h2><p class="d">Plan d\'actions issu de l\'ensemble des constats : mesures système et Informix, '
+         'classements des objets, et revue de la configuration (ONCONFIG) croisée avec les mesures. Priorités : <b>Immédiat</b> (risque d\'incident), '
+         '<b>P1</b> (effet majeur sur la charge), <b>P2</b> (effet significatif), <b>P3</b> (amélioration ou point de vigilance).</p>']
+    par = {}
+    for x in plan:
+        par.setdefault(x['prio'], []).append(x)
+    o.append('<div class="k">%s</div>' % ''.join('<div class="c"><div class="v">%d</div><div class="l">%s</div></div>' % (len(par.get(p, [])), p)
+                                                for p in ('Immédiat', 'P1', 'P2', 'P3')))
+    o.append(tableau(['Prio.', 'Réf.', 'Serveur', 'Nature', 'Constat', 'Action recommandée'],
+                     [['%s %s' % (badge(x['grav']), esc(x['prio'])), esc(x['ref']), esc(x['serveur']), esc(x['nature']),
+                       '<b>%s</b><br><span class="d">%s</span>' % (esc(x['constat']), esc(x['preuve'])), esc(x['action'])] for x in plan], 'Aucune recommandation.'))
+    o.append('<h3>Mesure de l\'efficacité</h3><p class="d">Relancer le même audit après chaque correction (même plage horaire) et comparer ces indicateurs '
+             'ainsi que les compteurs par objet (classements).</p>')
+    o.append(tableau(['Serveur', 'Indicateur', 'Valeur pendant l\'audit'], [[esc(n), esc(k), esc(v)] for n, l in indicateurs_reference(serveurs) for k, v in l]))
+    o.append('<h3>Pour aller plus loin</h3><ul class="d"><li>Trace SQL ciblée sur une session : <span class="mono">EXECUTE FUNCTION sysadmin:task(\'set sql tracing on\', 2000, \'4k\', \'high\', \'user\');'
+             ' EXECUTE FUNCTION sysadmin:task(\'set sql user tracing on\', &lt;sid&gt;);</span> puis <span class="mono">onstat -g his</span> ou sysmaster:syssqltrace.</li>'
+             '<li>Plan d\'exécution d\'une requête : <span class="mono">SET EXPLAIN ON;</span> (fichier sqexplain.out du compte).</li>'
+             '<li>Toute modification de l\'ONCONFIG ou du schéma est à valider avec l\'éditeur IRIUM et à tester en recette.</li></ul>')
+    if dossier_csv:
+        o.append('<p class="d">Plan d\'actions et classements complets exportés au format CSV (Excel) dans <span class="mono">%s</span>.</p>' % esc(dossier_csv))
+    o.append('</section>')
+    return ''.join(o)
+
+
 def generer(serveurs, sortie):
     t0 = min(s['debut'] for s in serveurs)
     t1 = max(s['fin'] for s in serveurs)
@@ -1218,7 +1813,7 @@ def generer(serveurs, sortie):
              '<span><b>Serveurs :</b> %s</span><span><b>Période :</b> %s, %s → %s</span><span><b>Généré le :</b> %s</span></div></header><main>'
              % (esc(', '.join('%s (%s)' % (s['nom'], s['roles']) for s in serveurs)), t0.strftime('%d/%m/%Y'), t0.strftime('%H:%M'), t1.strftime('%H:%M'),
                 dt.datetime.now().strftime('%d/%m/%Y %H:%M')))
-    o.append('<nav class="som"><a href="#diag">Diagnostic</a>%s%s%s</nav>' % (
+    o.append('<nav class="som"><a href="#diag">Diagnostic</a>%s%s%s<a href="#reco">Recommandations</a></nav>' % (
         '<a href="#signal">Signalements</a>' if marq else '', '<a href="#corr">Corrélations</a>' if cor else '',
         ''.join('<a href="#srv-%d">%s</a>' % (i, esc('%s (%s)' % (s['nom'], s['roles'].split(',')[0]))) for i, s in enumerate(serveurs))))
     # synthèse
@@ -1244,6 +1839,14 @@ def generer(serveurs, sortie):
                      [[esc(n), esc(l), '<b>%.2f</b>' % r, str(k)] for n, l, r, k in cor]))
     for i, s in enumerate(serveurs):
         o.append(section_serveur(s, t0, t1, marq, i))
+    plan = plan_recommandations(constats)
+    dossier_csv = os.path.splitext(sortie)[0] + '_inventaire'
+    try:
+        exporter_csv(dossier_csv, plan, serveurs)
+    except (IOError, OSError) as e:
+        print('Export CSV impossible : %s' % e, file=sys.stderr)
+        dossier_csv = None
+    o.append(section_recommandations(plan, serveurs, dossier_csv and os.path.basename(dossier_csv)))
     o.append('<p class="d">Seuils utilisés : CPU p95 > 85 %, iowait p95 > 15 %, disque occupé > 80 % avec temps de réponse > 10 ms, '
              'cache de lecture < 95 %, sessions en attente de verrou ≥ 3, checkpoint > 10 s ou bloquant. rapport_audit.py</p></main></body></html>')
     with io.open(sortie, 'w', encoding='utf-8') as f:
@@ -1280,6 +1883,7 @@ def main():
             sys.exit('Aucun audit valide.')
         constats = generer(serveurs, a.sortie)
         print('\nRapport : %s' % os.path.abspath(a.sortie))
+        print('Plan d\'actions et classements (CSV) : %s_inventaire/' % os.path.abspath(os.path.splitext(a.sortie)[0]))
         for c in constats[:8]:
             print('  [%s] %s - %s' % (c[1].upper(), c[0], c[3]))
     finally:

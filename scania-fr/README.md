@@ -14,16 +14,24 @@ Boîte à outils pour **identifier la source des lenteurs** sur l'infrastructure
 | Serveur | Rôle | Commande de supervision |
 |---|---|---|
 | `x0296se` | Base principale Informix `ol_x0296se` (`INFORMIXDIR=/opt/irium/informix`) | `./audit-irium.sh supervision --debut 07:30 --duree 5h --intervalle 30` |
-| `x0297se` | Réplica HDR probable (`ol_x0297se`) | idem |
+| `x0297se` | Secondaire **RSS** (`ol_x0297se`, asynchrone) | idem |
+| x0290se, x0294se, x0295se | Programmes Genero (fglrun), ≈ 1 200 sessions | idem `--bdd-hote x0296se --bdd-port sqlexec` |
 | serveurs d'applications IRIUM | Applications | idem `--bdd-hote x0296se --bdd-port sqlexec` |
 | serveur ipscrond | Tâches d'arrière-plan | idem `--bdd-hote x0296se --bdd-port sqlexec` |
 
 L'environnement Informix est lu dans le profil du compte `informix` : `ONCONFIG=onconfig.ol_x0296se`, `INFORMIXSQLHOSTS=…/sqlhosts.ol_x0296se`. Le journal du moteur `$INFORMIXDIR/tmp/online.log` est au format daté (`MSG_DATE 1`), ce que le script et le rapport gèrent.
 
-**Lecture préliminaire de l'ONCONFIG** : [docs/analyse-configuration-x0296se.md](docs/analyse-configuration-x0296se.md). Trois pistes sont prioritaires :
-- `USELASTCOMMITTED "NONE"` : les lecteurs attendent les écritures en cours ;
-- la réplication HDR synchrone (`NEAR_SYNC`) : chaque validation attend x0297se ;
-- 11 VP CPU + 6 VP réseau, à rapprocher du nombre de cœurs.
+x0296se : VM RHEL 7.6, 12 vCPU, 40 Go de RAM, IDS 14.10.FC7WE. Sous RHEL 7, Python 3.6+ peut manquer. Le rapport est alors généré sur un autre poste à partir de l'archive.
+
+- **Plan d'actions consolidé**, croisant le rapport du ticket 345564 et l'ONCONFIG : [docs/recommandations-x0296se.md](docs/recommandations-x0296se.md).
+- **Lecture préliminaire de l'ONCONFIG** : [docs/analyse-configuration-x0296se.md](docs/analyse-configuration-x0296se.md).
+
+Les priorités :
+- dbspace `datadbs` plein à 99,4 % ;
+- parcours complets de sav_evt et sav_lor ;
+- parcours inverses sur i_agrtrf1 et i_agrrem7 ;
+- fraîcheur des statistiques ;
+- `DIRECT_IO 0x5` sans effet (O_DIRECT absent).
 
 ## Ce qui est collecté
 
@@ -35,6 +43,7 @@ L'environnement Informix est lu dans le profil du compte `informix` : `ONCONFIG=
 | **Réseau** | erreurs d'interface, vitesse et duplex, connexions par port, **retransmissions TCP** ; depuis les serveurs d'applications et ipscrond : **latence (ping et connexion TCP) vers la base** |
 | **Informix** | voir le tableau ci-dessous |
 | **IRIUM / ipscrond** | nombre de processus IRIUM, **traitements ipscrond en cours** (commande, durée, CPU) pour les relier aux pics de la base |
+| **Pression mémoire du noyau** | compactages et allocations bloquantes, recyclage du cache de pages (Mo/s), fragmentation (`/proc/buddyinfo`), `vm.min_free_kbytes`, THP |
 
 | Commande Informix | Fréquence | Usage |
 |---|---|---|
@@ -47,9 +56,12 @@ L'environnement Informix est lu dans le profil du compte `informix` : `ONCONFIG=
 | `onstat -g glo` | 5 min | occupation réelle des VP CPU |
 | `onstat -g ckp`, `-l`, `-g iof`, `-g dri`, `-x`, `-g wai` | 5 min | durée et blocage des checkpoints, logs non sauvegardés, **temps d'I/O par chunk**, réplication HDR (état, backlog), transactions, attentes |
 | `onstat -g ses`, `-g sql`, `-g ath`, `-g repl`, `-g rss`, `-g ppf` + requêtes **sysmaster** | 15 min | sessions, SQL en cours, threads ; **sessions et tables les plus coûteuses** (lectures, balayages séquentiels, attentes de verrous) |
+| `onstat -g ppf` + `sysptprof` + `syssesprof` (export unload) | 15 min et en fin d'audit | **compteurs par table et par index** : lectures physiques et logiques, lectures ISAM, scans séquentiels, **parcours inverses**, verrous, hit ratio ; **compteurs par session** (utilisateur, poste, PID). Le rapport calcule le cumul depuis le démarrage et le delta sur la fenêtre |
+| Inventaire SQL (une fois) | | **remplissage des dbspaces**, taille et nombre d'extents des plus grosses tables, **date des dernières statistiques** (`systables.ustlowts`, `sysdistrib`) de chaque base, rattachement index → table |
+| Ouverture des chunks (une fois) | | drapeaux d'ouverture des chunks par les processus `oninit` : **DIRECT_IO réellement actif ou non** (`O_DIRECT`) |
 | Une fois, au démarrage | | `onstat -g seg`, `-g osi`, `-d`, `-D`, `-R`, `-g buf`, `-g ntt`, `-g mgm`, `-g lmx`, `-s`, `-g cluster`, `-c` ; **ONCONFIG complet** ; sqlhosts ; chunks → périphériques ; journal du moteur (MSGPATH) |
 
-**Impact sur la production : négligeable.** Les `onstat` lisent la mémoire partagée sans verrou. Aucune commande lourde n'est lancée (ni `oncheck`, ni `UPDATE STATISTICS`), et rien n'est modifié. Chaque commande a un délai maximal.
+**Impact sur la production : négligeable.** Les `onstat` lisent la mémoire partagée sans verrou. Les requêtes SQL ne lisent que sysmaster et le catalogue (`SET ISOLATION TO DIRTY READ`, délai limité). Aucune commande lourde n'est lancée (ni `oncheck`, ni `UPDATE STATISTICS`, ni trace SQL), et rien n'est modifié. `--sans-sql` désactive toutes les requêtes. Chaque commande a un délai maximal.
 
 ## Déroulé recommandé
 
@@ -87,7 +99,9 @@ C'est le point clé de la méthode. Le rapport montre, pour chaque signalement, 
 
 ### Après : rapport
 
-Récupérer les archives `/var/tmp/scania-fr/<serveur>_<date>.tar.gz` des 4 serveurs, puis, sur n'importe quelle machine avec Python 3.6+ :
+**À la fin de chaque audit, le rapport du serveur est généré automatiquement** dans le dossier de l'audit (et dans l'archive) : `rapport_<serveur>.html`, avec le plan d'actions et les classements au format CSV dans `rapport_<serveur>_inventaire/`. Il faut pour cela que `rapport_audit.py` soit à côté de `audit-irium.sh`. `--sans-rapport` désactive cette étape.
+
+Pour le **rapport consolidé des 4 serveurs**, récupérer les archives `/var/tmp/scania-fr/<serveur>_<date>.tar.gz` des 4 serveurs, puis, sur n'importe quelle machine avec Python 3.6+ :
 ```bash
 python3 rapport_audit.py srv-bdd_*.tar.gz srv-rep_*.tar.gz srv-app_*.tar.gz srv-cron_*.tar.gz -o rapport_scania.html
 ```
@@ -101,7 +115,20 @@ Sur RHEL 8 sans python3 : `/usr/libexec/platform-python rapport_audit.py …`
 4. **Par serveur** :
    - des graphiques alignés sur la même période, où les signalements apparaissent en pointillés rouges ;
    - les processus les plus consommateurs, les traitements ipscrond et les disques ;
-   - pour Informix : les paramètres ONCONFIG commentés, les chunks, les VP, la réplication, le journal du moteur et les sorties brutes.
+   - pour Informix : les paramètres ONCONFIG commentés, les chunks, les VP, la réplication, le journal du moteur et les sorties brutes ;
+   - **les objets les plus coûteux**, sur le modèle du rapport du ticket 345564 : classement 1 (lectures physiques), 2 (lectures logiques, avec le profil d'accès déduit), 3 (scans séquentiels, avec pages par scan), 4 (parcours inverses d'index), verrous par objet, sessions les plus consommatrices ; remplissage des dbspaces ; ouverture des chunks.
+5. **Recommandations**, en fin de rapport : le plan d'actions priorisé. Il regroupe :
+   - **Immédiat** : risque d'incident, par exemple un dbspace plein ;
+   - **P1** : effet majeur sur la charge ;
+   - **P2** et **P3**.
+
+   Chaque action précise sa nature : système, base de données, applicatif ou configuration. La revue de l'**ONCONFIG est croisée avec les mesures**, par exemple :
+   - `USELASTCOMMITTED NONE` passe en P1 si une contention sur les verrous a été mesurée ;
+   - `DIRECT_IO` est signalé s'il est configuré alors que les chunks ne sont pas ouverts en `O_DIRECT` ;
+   - `DS_NONPDQ_QUERY_MEM` est relevé si des tris débordent sur disque ;
+   - `OPTCOMPIND 2` est relevé en présence de scans coûteux.
+
+   Le tableau « Mesure de l'efficacité » donne les indicateurs de référence à comparer après chaque correction. Le même plan est exporté en CSV, avec des colonnes de suivi, pour Excel.
 
 Repères utilisés par le diagnostic :
 
@@ -118,6 +145,13 @@ Repères utilisés par le diagnostic :
 | Threads prêts (`onstat -g rea`) | < nombre de VP CPU | au-delà de façon continue : manque de VP CPU ou de cœurs |
 | Latence application → base | < 0,5 ms (même LAN) | > 2 ms : réseau. IRIUM fait de nombreux allers-retours, donc chaque milliseconde compte |
 | Réplication HDR synchrone | | Toute lenteur de la réplica ralentit les validations de la base principale |
+| Dbspace de données | > 10 % libre | < 5 % : P1 ; < 1 % : **Immédiat** (échec d'allocation d'extents) |
+| Lectures physiques par objet | réparties | 2 objets ≥ 30 % des pages lues sur disque : parcours complets répétés |
+| Parcours inverses d'index | rares | > 100/s concentrés sur 1 ou 2 index : requêtes « dernière ligne » en boucle |
+| Scans séquentiels | petites tables | ≥ 4 000 pages par scan avec ≥ 10^8 pages lues au total : index manquant ; ≥ 0,5 scan/s sur une table moyenne : index sur le critère |
+| Index : lectures logiques / lecture ISAM | ≈ 3 | ≥ 2 000 lectures ISAM/s : traitement ligne à ligne (boucle FOREACH) |
+| Statistiques de l'optimiseur | < 30 jours | absentes ou anciennes sur une table en tête des classements |
+| Pression mémoire du noyau | 0 | compactages > 1/s, allocations bloquantes > 10/s, ou aucun bloc libre > 16 Ko |
 
 ## Causes fréquentes sur ce type d'architecture
 

@@ -115,3 +115,94 @@ def test_journal_moteur_msg_date_et_config_scania(tmp_path):
     assert titres['VP CPU + VP réseau supérieurs au nombre de cœurs'] == 'moyenne'
     assert 'Lecture de la dernière version validée désactivée' in titres and 'Réplication HDR synchrone' in titres
     assert 'Plus de VP CPU que de cœurs' in [t for _g, t, _p, _r in r.revue_configuration(cf, 32 * 1024, 8)]
+
+
+PPF = """Partition profiles
+partnum    lkrqs lkwts dlks  touts isrd  iswrt isrwt isdel bfrd  bfwrt seqsc rvscn rhitratio
+0x200010 1000 0 0 0 900000 0 0 0 %d 0 %d 0 94
+0x200020 10 0 0 0 %d 0 0 0 %d 0 0 %d 100
+0x200030 %d 0 0 0 1600000 0 0 0 %d 0 %d 0 100
+"""
+
+
+def fabriquer_objets(d):
+    """Ajoute à un audit les profils par objet, l'inventaire et l'ouverture des chunks (cas du ticket 345564)."""
+    inv = os.path.join(d, 'informix', 'inventaire')
+    os.makedirs(inv)
+    ppf, tab, ses, ent = [], [], [], []
+    for k, t in enumerate((0, 1740)):
+        ppf.append(bloc(t, PPF % (9000000 + k * 4000000, 41 + k * 3, 800000000 + k * 900000, 2400000000 + k * 2700000, 790000000 + k * 880000,
+                                  220000000 + k * 220000, 3895000000 + k * 3900000, 19600 + k * 20)))
+        tab.append(bloc(t, 'magix_prod|sav_evt|900000|%d|%d|%d|1000|0|0|0|0|\nmagix_prod|sav_lor|700000|7000000|%d|30|800|0|0|0|0|\n' % (
+            9000000 + k * 4000000, 465000000 + k * 600000, 41 + k * 3, 243000000 + k * 100000)))
+        ses.append(bloc(t, '277616|crxzcj|x0295se|9553|%d|900000000|300000000|169|1000|0|120|40|\n301122|scaop|x0290se|12001|%d|80000000|30000000|12|10|0|50|0|\n' % (
+            154000000 + k * 900000, 2000000 + k * 30000)))
+        ent.append(bloc(t, 'IBM Informix Dynamic Server Version 14.10.FC7WE -- On-Line (Prim) -- Up 3 days 04:06:56 -- 25000000 Kbytes'))
+    for nom, contenu in [('onstat_ppf.raw', ppf), ('profil_tables.raw', tab), ('profil_sessions.raw', ses), ('onstat_entete.raw', ent)]:
+        with open(os.path.join(d, 'informix', nom), 'w') as f:
+            f.write(''.join(contenu))
+    fichiers = {
+        'partitions.unl': '%d|magix_prod|sav_evt|\n%d|magix_prod|i_agrtrf1|\n%d|magix_prod|zsc_whi|\n' % (0x200010, 0x200020, 0x200030),
+        'dbspaces.unl': 'rootdbs|0|0|500000|120000|1|\ndatadbs|0|0|5000000|30000|4|\ntempdbs1|1|0|1000000|990000|1|\n',
+        'tailles.unl': 'magix_prod|sav_evt|11500000|11000000|52000000|12|\nmagix_prod|zsc_whi|200000|198617|900000|3|\n',
+        'stats_magix_prod.unl': 'sav_evt|52000000|11000000|2026-01-15 02:00:00.00000|\nzsc_whi|900000|198617||\nsav_lor|1|1|2026-10-20 02:00:00.00000|\n',
+        'distrib_magix_prod.unl': 'sav_evt|15/01/2026|4|\n',
+        'index_magix_prod.unl': 'i_agrtrf1|agr_trf|\n',
+    }
+    for nom, contenu in fichiers.items():
+        with open(os.path.join(inv, nom), 'w') as f:
+            f.write(contenu)
+    with open(os.path.join(d, 'statique', 'informix', 'chunks_ouverture.txt'), 'w') as f:
+        f.write('# chunk|pid|flags(octal)|o_direct|type\n/opt/irium/data/datadbs1|738|02100002|0|fichier\n')
+    with open(os.path.join(d, 'statique', 'informix', 'onconfig.txt'), 'a') as f:
+        f.write('DIRECT_IO 0x5\nUSELASTCOMMITTED "NONE"\nOPTCOMPIND 2\n')
+    with open(os.path.join(d, 'statique', 'informix', 'onstat__g_rss.txt'), 'w') as f:
+        f.write('Local server type: Primary\nNumber of RSS servers: 1\n')
+
+
+def test_objets_inventaire_et_recommandations(tmp_path):
+    d = str(tmp_path / 'srv')
+    fabriquer(d)
+    fabriquer_objets(d)
+    s = r.charger(d)
+    assert s['obj']['uptime_s'] == 3 * 86400 + 4 * 3600 + 6 * 60 + 56
+    cl = r.classements(s['obj'])
+    assert cl['physiques']['liste'][0][0]['nom'] == 'sav_evt'
+    assert cl['inverses']['liste'][0][0]['nom'] == 'i_agrtrf1' and cl['inverses']['liste'][0][0]['table'] == 'agr_trf'
+    assert abs(cl['inverses']['liste'][0][3] - 880000 / 1740.0) < 1          # fréquence sur la fenêtre
+    titres = {c[2]: c for c in r.diagnostic(s)}
+    assert titres['Dbspace datadbs presque plein'][0] == 'critique'
+    assert 'Dbspace tempdbs1 presque plein' not in titres
+    assert 'Parcours inverses d\'index concentrés (i_agrtrf1)' in titres
+    assert 'zsc_whi' in titres['Scans séquentiels coûteux sur de grandes tables'][3]
+    st = titres['Statistiques de l\'optimiseur absentes ou anciennes sur des tables sollicitées'][3]
+    assert 'sav_evt : 15/01/2026' in st and 'zsc_whi : jamais' in st
+    assert 'session 277616' in titres['Une session concentre les lectures physiques (session 277616)'][3]
+    # configuration croisée avec les mesures
+    assert titres['DIRECT_IO configuré mais inactif sur les chunks'][0] in ('moyenne', 'haute')
+    assert titres['Lecture de la dernière version validée désactivée'][0] == 'haute'   # contention mesurée
+    assert titres['Optimiseur orienté coût global'][0] == 'moyenne'
+    assert 'Paramètres HDR sans effet : secondaire RSS' in titres and 'Réplication HDR synchrone' not in titres
+    plan = r.plan_recommandations([('srv',) + c for c in r.diagnostic(s)])
+    assert plan[0]['prio'] == 'Immédiat' and plan[0]['ref'] == 'R01'
+    sortie = str(tmp_path / 'rapport.html')
+    r.generer([s], sortie)
+    h = open(sortie, encoding='utf-8').read()
+    assert 'id="reco"' in h and 'Classement 4' in h and h.rfind('id="reco"') > h.rfind('id="srv-0"')
+    csvp = str(tmp_path / 'rapport_inventaire' / '00_plan_recommandations.csv')
+    assert 'Dbspace datadbs presque plein' in open(csvp, encoding='utf-8-sig').read()
+
+
+def test_pression_memoire_noyau(tmp_path):
+    d = str(tmp_path / 'srv')
+    fabriquer(d, incident=False)
+    vm = ''.join(bloc(i * 60, 'pswpin 0\npswpout 0\npgmajfault 0\ncompact_stall %d\nallocstall_normal %d\npgsteal_kswapd %d' % (i * 1200, i * 3000, i * 5000000))
+                 for i in range(30))
+    with open(os.path.join(d, 'series', 'vmstat.raw'), 'w') as f:
+        f.write(vm)
+    with open(os.path.join(d, 'series', 'buddyinfo.raw'), 'w') as f:
+        f.write(bloc(0, 'Node 0, zone   Normal   5000  300    0    0    0    0    0    0    0    0    0'))
+    s = r.charger(d)
+    assert s['buddy'][0]['bloc_ko'] == 8
+    c = {x[2]: x for x in r.diagnostic(s)}['Pression mémoire du noyau (récupération et compactage)']
+    assert c[0] == 'haute' and '8 Ko' in c[3]
