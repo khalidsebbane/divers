@@ -1,37 +1,29 @@
 # Scania France : audit des lenteurs ERP IRIUM (Informix / RHEL)
 
-Boîte à outils pour **identifier la source des lenteurs** sur l'infrastructure IRIUM, en supervisant tous les serveurs en même temps pendant une matinée :
+Boîte à outils pour **identifier la source des lenteurs** sur l'infrastructure IRIUM. Une **campagne d'audit** supervise tous les serveurs en même temps et produit **un rapport central unique**, mis à jour pendant la journée :
+- l'état de la base Informix ;
+- les programmes IRIUM lancés (journal `agr_lds`) ;
+- l'état des serveurs.
+
+Les recommandations sont **calculées à partir des mesures** de la campagne et de la configuration relevée (ONCONFIG, noyau…).
 
 | Fichier | Rôle |
 |---|---|
-| `audit-irium.sh` | Collecte en **lecture seule** sur chaque serveur : système, CPU, mémoire, disques, réseau, Informix, processus IRIUM/ipscrond. Bash, sans dépendance |
-| `rapport_audit.py` | Analyse les collectes de **tous les serveurs** et produit un **rapport HTML unique** avec un diagnostic automatique. Python 3.6+, sans dépendance |
+| `audit-irium.sh` | Collecte en **lecture seule** sur chaque serveur et pilotage de la campagne (démarrer, état, signalements, rapport, arrêt). Bash, sans dépendance |
+| `rapport_audit.py` | Analyse les données de **tous les serveurs** de la campagne et produit le **rapport HTML central** : diagnostic, classements, programmes, plan de recommandations, export CSV. Python 3.6+, sans dépendance |
 
 ![Exemple de diagnostic (données simulées)](docs/exemple-diagnostic.png)
 
 ## Environnement Scania (relevé le 21/10/2026)
 
-| Serveur | Rôle | Commande de supervision |
-|---|---|---|
-| `x0296se` | Base principale Informix `ol_x0296se` (`INFORMIXDIR=/opt/irium/informix`) | `./audit-irium.sh supervision --debut 07:30 --duree 5h --intervalle 30` |
-| `x0297se` | Secondaire **RSS** (`ol_x0297se`, asynchrone) | idem |
-| x0290se, x0294se, x0295se | Programmes Genero (fglrun), ≈ 1 200 sessions | idem `--bdd-hote x0296se --bdd-port sqlexec` |
-| serveurs d'applications IRIUM | Applications | idem `--bdd-hote x0296se --bdd-port sqlexec` |
-| serveur ipscrond | Tâches d'arrière-plan | idem `--bdd-hote x0296se --bdd-port sqlexec` |
+| Serveur | Rôle |
+|---|---|
+| `x0296se` | Base principale Informix `ol_x0296se` (`INFORMIXDIR=/opt/irium/informix`) |
+| `x0297se` | Secondaire Informix `ol_x0297se` (type HDR ou RSS relevé par l'audit) |
+| serveurs d'applications IRIUM / Genero (fglrun) | Applications : la latence vers la base est mesurée |
+| serveur ipscrond | Tâches d'arrière-plan |
 
-L'environnement Informix est lu dans le profil du compte `informix` : `ONCONFIG=onconfig.ol_x0296se`, `INFORMIXSQLHOSTS=…/sqlhosts.ol_x0296se`. Le journal du moteur `$INFORMIXDIR/tmp/online.log` est au format daté (`MSG_DATE 1`), ce que le script et le rapport gèrent.
-
-x0296se : VM RHEL 7.6, 12 vCPU, 40 Go de RAM, IDS 14.10.FC7WE. Sous RHEL 7, Python 3.6+ peut manquer. Le rapport est alors généré sur un autre poste à partir de l'archive.
-
-- **Plan d'actions consolidé**, croisant le rapport du ticket 345564 et l'ONCONFIG : [docs/recommandations-x0296se.md](docs/recommandations-x0296se.md).
-- **Lecture préliminaire de l'ONCONFIG** : [docs/analyse-configuration-x0296se.md](docs/analyse-configuration-x0296se.md).
-
-Les priorités :
-- dbspace `datadbs` plein à 99,4 % ;
-- parcours complets de sav_evt et sav_lor ;
-- parcours inverses sur i_agrtrf1 et i_agrrem7 ;
-- fraîcheur des statistiques ;
-- `DIRECT_IO 0x5` sans effet (O_DIRECT absent).
+L'environnement Informix est lu dans le profil du compte `informix` (`ONCONFIG=onconfig.ol_x0296se`, `INFORMIXSQLHOSTS=…/sqlhosts.ol_x0296se`). Le journal du moteur `$INFORMIXDIR/tmp/online.log` est au format daté (`MSG_DATE 1`). Une lecture préliminaire de l'ONCONFIG figure dans [docs/analyse-configuration-x0296se.md](docs/analyse-configuration-x0296se.md) : elle donne des hypothèses, que la campagne confirme ou écarte.
 
 ## Ce qui est collecté
 
@@ -43,6 +35,7 @@ Les priorités :
 | **Réseau** | erreurs d'interface, vitesse et duplex, connexions par port, **retransmissions TCP** ; depuis les serveurs d'applications et ipscrond : **latence (ping et connexion TCP) vers la base** |
 | **Informix** | voir le tableau ci-dessous |
 | **IRIUM / ipscrond** | nombre de processus IRIUM, **traitements ipscrond en cours** (commande, durée, CPU) pour les relier aux pics de la base |
+| **Programmes IRIUM (base)** | journal applicatif `agr_lds` sur la base principale : programmes lancés pendant la campagne (et dans l'heure précédente), avec utilisateur, poste, début et fin. Relevé toutes les 5 min, puis relu en fin de campagne pour les dates de fin. Table modifiable avec `--table-programmes` |
 | **Pression mémoire du noyau** | compactages et allocations bloquantes, recyclage du cache de pages (Mo/s), fragmentation (`/proc/buddyinfo`), `vm.min_free_kbytes`, THP |
 
 | Commande Informix | Fréquence | Usage |
@@ -63,60 +56,77 @@ Les priorités :
 
 **Impact sur la production : négligeable.** Les `onstat` lisent la mémoire partagée sans verrou. Les requêtes SQL ne lisent que sysmaster et le catalogue (`SET ISOLATION TO DIRTY READ`, délai limité). Aucune commande lourde n'est lancée (ni `oncheck`, ni `UPDATE STATISTICS`, ni trace SQL), et rien n'est modifié. `--sans-sql` désactive toutes les requêtes. Chaque commande a un délai maximal.
 
-## Déroulé recommandé
+## Déroulé sur site : campagne d'audit
 
-### La veille : préparation (15 min)
+### Installation (une fois) : un dossier commun à tous les serveurs
 
-1. **Copier** le dossier `scania-fr/` sur les 4 serveurs, par exemple dans `/root/scania-fr`, puis `chmod +x audit-irium.sh`.
-2. **Vérifier que l'heure est synchronisée** sur tous les serveurs (`chronyc tracking`). La comparaison entre serveurs repose sur l'heure.
-3. **Repérer le nom exact des processus IRIUM** : `ps -ef | grep -iE 'ips|irium|fgl' | grep -v grep`. Si les noms diffèrent des motifs par défaut (`ipscrond|fglrun|fglgo|irium|ips…`), les passer avec `--motifs`.
-4. **Relever le port du listener Informix** dans `$INFORMIXDIR/etc/sqlhosts` (ex. 9088).
-5. **Lancer un instantané** sur chaque serveur pour valider. Il prend environ 2 minutes :
-   ```bash
-   ./audit-irium.sh instantane
-   ```
+1. **Déposer** `audit-irium.sh` et `rapport_audit.py` dans un dossier **partagé** (NFS) monté **au même chemin** sur tous les serveurs, par exemple `/partage/audit-scania/`. Puis `chmod +x audit-irium.sh`.
+2. Le compte **root** doit pouvoir écrire dans ce dossier : export NFS en `no_root_squash`, ou dossier en `777` dédié à l'audit. La commande `campagne demarrer` vérifie l'écriture, et refuse de démarrer sinon.
+   - Éviter, si possible, un partage hébergé par le serveur de base.
+   - De toute façon, chaque serveur collecte **en local** (`/var/tmp/scania-fr`) et copie ses données sur le partage toutes les 5 minutes. Un partage lent ou indisponible ne bloque donc jamais la collecte.
+3. **Vérifier l'heure** sur tous les serveurs (`chronyc tracking`) : le rapport aligne les serveurs sur l'heure.
+4. **Facultatif** : une clé SSH root depuis le serveur de lancement vers les autres permet de tout démarrer avec une seule commande. Sans SSH, lancer `campagne rejoindre` sur chaque serveur.
+5. **Test rapide** : `./audit-irium.sh instantane` sur un serveur (2 minutes).
 
-### Le jour J : supervision de la matinée
+### Le matin : lancer la campagne
 
-Lancer **sur les 4 serveurs**, avec la même heure de début et le même intervalle :
-
-| Serveur | Commande (en root) |
-|---|---|
-| Base principale Informix | `./audit-irium.sh supervision --debut 07:30 --duree 5h --intervalle 30` |
-| Réplica Informix | `./audit-irium.sh supervision --debut 07:30 --duree 5h --intervalle 30` |
-| Serveur(s) d'applications IRIUM | `./audit-irium.sh supervision --debut 07:30 --duree 5h --intervalle 30 --bdd-hote <serveur-bdd> --bdd-port 9088` |
-| Serveur ipscrond | `./audit-irium.sh supervision --debut 07:30 --duree 5h --intervalle 30 --bdd-hote <serveur-bdd> --bdd-port 9088` |
-
-- La supervision tourne en arrière-plan et **continue après la déconnexion SSH**. Elle peut être lancée la veille, grâce à `--debut 07:30`.
-- **Suivi** : `./audit-irium.sh statut`. **Arrêt anticipé** : `./audit-irium.sh arreter`. L'archive est alors finalisée.
-- **Volume** : environ 5 à 20 Mo par serveur pour une matinée.
-
-**Signaler chaque lenteur ressentie, en direct** (support, key users au téléphone) sur n'importe quel serveur supervisé :
+Depuis n'importe quel serveur, en root :
 ```bash
-./audit-irium.sh marquer "Lenteur saisie commande - agence Lyon"
+cd /partage/audit-scania
+./audit-irium.sh campagne demarrer scania-22oct --serveurs "x0296se x0297se x0290se x0294se x0295se" \
+    --debut 07:30 --duree 5h --intervalle 30 --bdd-hote x0296se --bdd-port sqlexec
 ```
-C'est le point clé de la méthode. Le rapport montre, pour chaque signalement, **ce qui sortait de l'ordinaire à ce moment-là** sur tous les serveurs.
+- Chaque serveur démarre sa collecte en arrière-plan, qui **continue après la déconnexion SSH**. Le rôle de chaque serveur est détecté automatiquement. La latence vers la base n'est mesurée que depuis les autres serveurs.
+- Si un serveur n'est pas joignable en SSH, la commande à y lancer est affichée : `./audit-irium.sh campagne rejoindre scania-22oct`.
+- **Suivi** : `./audit-irium.sh campagne etat` donne, pour chaque serveur, son rôle, son état (en cours, terminé, silencieux), son dernier relevé et son nombre d'échantillons.
+- **Signaler chaque lenteur ressentie, en direct**, depuis n'importe quel serveur :
+  ```bash
+  ./audit-irium.sh marquer "Lenteur saisie commande - agence Lyon"
+  ```
+  Les signalements sont centralisés sur le partage. Le rapport montre, pour chacun, ce qui sortait de l'ordinaire à ce moment-là sur tous les serveurs, et **les programmes IRIUM lancés ou en cours**.
 
-### Après : rapport
+### Pendant la journée et l'après-midi : le rapport central
 
-**À la fin de chaque audit, le rapport du serveur est généré automatiquement** dans le dossier de l'audit (et dans l'archive) : `rapport_<serveur>.html`, avec le plan d'actions et les classements au format CSV dans `rapport_<serveur>_inventaire/`. Il faut pour cela que `rapport_audit.py` soit à côté de `audit-irium.sh`. `--sans-rapport` désactive cette étape.
+- Le rapport `/partage/audit-scania/campagnes/<nom>/rapport_<nom>.html` est **régénéré toutes les 30 minutes** pendant la campagne. Il est produit par un serveur sans base Informix, pour ne pas charger la base. Ouvert dans un navigateur, il **se recharge seul** tant que la campagne est en cours.
+- À la fin, chaque serveur synchronise ses dernières données. Le rapport final est produit dès que tous les serveurs ont terminé.
+- **Rapport immédiat** à tout moment, sur données partielles : `./audit-irium.sh campagne rapport`.
+- **Arrêt anticipé** de tous les serveurs : `./audit-irium.sh campagne arreter`.
+- Le plan d'actions et les classements sont aussi exportés en CSV (Excel) dans `rapport_<nom>_inventaire/`.
+- Python 3.6+ est nécessaire sur au moins un serveur, ou sur le poste de l'auditeur. Si aucun serveur ne l'a (RHEL 7 n'a souvent que Python 2.7), lancer sur ce poste :
+  ```bash
+  python3 rapport_audit.py /partage/audit-scania/campagnes/<nom>
+  ```
 
-Pour le **rapport consolidé des 4 serveurs**, récupérer les archives `/var/tmp/scania-fr/<serveur>_<date>.tar.gz` des 4 serveurs, puis, sur n'importe quelle machine avec Python 3.6+ :
-```bash
-python3 rapport_audit.py srv-bdd_*.tar.gz srv-rep_*.tar.gz srv-app_*.tar.gz srv-cron_*.tar.gz -o rapport_scania.html
+Contenu du partage :
 ```
-Sur RHEL 8 sans python3 : `/usr/libexec/platform-python rapport_audit.py …`
+/partage/audit-scania/
+  audit-irium.sh  rapport_audit.py
+  campagnes/<nom>/
+    campagne.conf            paramètres de la campagne
+    <serveur>/               données de chaque serveur (synchronisées toutes les 5 min)
+    <serveur>.etat           avancement
+    marqueurs.txt            signalements des utilisateurs
+    rapport_<nom>.html       RAPPORT CENTRAL
+    rapport_<nom>_inventaire/  plan d'actions et classements (CSV)
+```
+Une archive `.tar.gz` de chaque serveur est aussi conservée localement dans `/var/tmp/scania-fr`. **Volume** : 5 à 20 Mo par serveur pour une matinée.
+
+### Mode autonome (un seul serveur, sans partage)
+
+`./audit-irium.sh supervision --duree 4h [--debut 07:30]`, puis `statut` / `marquer` / `arreter`. Le rapport du serveur est généré en fin d'audit dans son dossier local. Plusieurs archives peuvent ensuite être consolidées avec `python3 rapport_audit.py a.tar.gz b.tar.gz -o rapport.html`.
 
 ## Lire le rapport
 
+0. **Campagne** : avancement de chaque serveur (en cours, terminé, silencieux).
 1. **Diagnostic** : la liste des constats classés par gravité, avec les preuves chiffrées et la recommandation. Le bandeau du haut résume les causes les plus probables.
-2. **Signalements de lenteur** : pour chaque marque, les indicateurs qui s'écartent de leur moyenne à ± 5 minutes.
+2. **Signalements de lenteur** : pour chaque marque, les indicateurs qui s'écartent de leur moyenne à ± 5 minutes, et les programmes IRIUM lancés ou en cours.
 3. **Corrélations** : coïncidence minute par minute entre les traitements ipscrond et les verrous, la charge ou le CPU de la base.
 4. **Par serveur** :
    - des graphiques alignés sur la même période, où les signalements apparaissent en pointillés rouges ;
    - les processus les plus consommateurs, les traitements ipscrond et les disques ;
    - pour Informix : les paramètres ONCONFIG commentés, les chunks, les VP, la réplication, le journal du moteur et les sorties brutes ;
-   - **les objets les plus coûteux**, sur le modèle du rapport du ticket 345564 : classement 1 (lectures physiques), 2 (lectures logiques, avec le profil d'accès déduit), 3 (scans séquentiels, avec pages par scan), 4 (parcours inverses d'index), verrous par objet, sessions les plus consommatrices ; remplissage des dbspaces ; ouverture des chunks.
+   - **les programmes IRIUM** : lancements par tranche de 5 minutes, programmes les plus utilisés et les plus longs, et **programmes sur-représentés pendant les pics** de charge ou de verrous de la base (présence pendant les 10 % de relevés les plus chargés, comparée au reste du temps) ;
+   - **les objets les plus coûteux** : classement 1 (lectures physiques), 2 (lectures logiques, avec le profil d'accès déduit), 3 (scans séquentiels, avec pages par scan), 4 (parcours inverses d'index), verrous par objet, sessions les plus consommatrices ; remplissage des dbspaces ; ouverture des chunks.
 5. **Recommandations**, en fin de rapport : le plan d'actions priorisé. Il regroupe :
    - **Immédiat** : risque d'incident, par exemple un dbspace plein ;
    - **P1** : effet majeur sur la charge ;
@@ -152,6 +162,7 @@ Repères utilisés par le diagnostic :
 | Index : lectures logiques / lecture ISAM | ≈ 3 | ≥ 2 000 lectures ISAM/s : traitement ligne à ligne (boucle FOREACH) |
 | Statistiques de l'optimiseur | < 30 jours | absentes ou anciennes sur une table en tête des classements |
 | Pression mémoire du noyau | 0 | compactages > 1/s, allocations bloquantes > 10/s, ou aucun bloc libre > 16 Ko |
+| Programme pendant les pics | présence comparable | présent dans ≥ 30 % des pics et au moins 1,5 fois plus souvent que le reste du temps |
 
 ## Causes fréquentes sur ce type d'architecture
 

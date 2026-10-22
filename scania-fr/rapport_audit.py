@@ -897,6 +897,186 @@ def fmt_n(v):
 
 
 # --------------------------------------------------------------------------------------------
+# Programmes IRIUM (journal applicatif agr_lds : un enregistrement par programme lancé)
+# --------------------------------------------------------------------------------------------
+ROLES_COLONNES = [('debut', [r'_open$', r'debut', r'date', r'_ts$']), ('fin', [r'_close$', r'_fin$', r'_end$']),
+                  ('utilisateur', [r'user', r'util', r'login', r'operat']), ('programme', [r'_prog$', r'prog', r'appli', r'module', r'_cmd']),
+                  ('complement', [r'complement', r'_nom$', r'libel']), ('poste', [r'_tty$', r'host', r'poste', r'term'])]
+
+
+def date_heure(v):
+    v = (v or '').strip()
+    for f, n in (('%Y-%m-%d %H:%M:%S', 19), ('%Y-%m-%d %H:%M', 16), ('%d/%m/%Y %H:%M:%S', 19), ('%Y-%m-%d', 10), ('%d/%m/%Y', 10)):
+        try:
+            return dt.datetime.strptime(v[:n], f)
+        except ValueError:
+            pass
+    return None
+
+
+def programmes(d):
+    meta = dict(re.findall(r'^(\w+)=(.*)$', lire(os.path.join(d, 'informix', 'programmes_table.txt')), re.M))
+    if not meta.get('colonnes'):
+        return None
+    cols = [c.strip() for c in meta['colonnes'].split(',')]
+    roles = {}
+    for role, motifs in ROLES_COLONNES:
+        for m in motifs:
+            c = [x for x in cols if re.search(m, x, re.I) and x not in roles.values()]
+            if c:
+                roles[role] = c[0]
+                break
+    if meta.get('colonne_date') in cols:
+        roles['debut'] = meta['colonne_date']
+    final = lire(os.path.join(d, 'informix', 'programmes_final.unl'))
+    lignes = lignes_unl(final) if final.strip() else [l for _ts, t in blocs(os.path.join(d, 'informix', 'programmes.raw')) for l in lignes_unl(t)]
+    vus, res = set(), []
+    idx = dict((r, cols.index(c)) for r, c in roles.items())
+    for l in lignes:
+        if len(l) < len(cols) or tuple(l) in vus:
+            continue
+        vus.add(tuple(l))
+        v = lambda r: l[idx[r]] if r in idx else ''
+        deb = date_heure(v('debut'))
+        if not deb:
+            continue
+        nom = v('programme') or v('complement') or '?'
+        if v('programme') and v('complement') and v('complement') != v('programme'):
+            nom = '%s (%s)' % (v('programme'), v('complement'))
+        res.append({'debut': deb, 'fin': date_heure(v('fin')), 'programme': nom, 'utilisateur': v('utilisateur'), 'poste': v('poste')})
+    res.sort(key=lambda e: e['debut'])
+    return {'base': meta.get('base'), 'table': meta.get('table'), 'roles': roles, 'liste': res, 'avec_fin': 'fin' in roles}
+
+
+def en_cours(p, t, marge):
+    """Programmes en cours à l'instant t (ou lancés dans la marge précédente si la date de fin est inconnue)."""
+    res = []
+    for e in p['liste']:
+        if e['debut'] > t:
+            break
+        if (e['fin'] and e['debut'] <= t <= e['fin']) or (not e['fin'] and p['avec_fin'] and e['debut'] <= t and t - e['debut'] < dt.timedelta(hours=8)) \
+                or (not p['avec_fin'] and t - marge <= e['debut'] <= t):
+            res.append(e)
+    return res
+
+
+def analyse_programmes(s):
+    """Activité des programmes pendant l'audit, et programmes sur-représentés pendant les pics de la base."""
+    p = s.get('prog')
+    if not p or not p['liste']:
+        return None
+    t0, t1 = s['debut'], s['fin']
+    fen = [e for e in p['liste'] if t0 <= e['debut'] <= t1]
+    par_prog = {}
+    for e in fen:
+        a = par_prog.setdefault(e['programme'], {'lancements': 0, 'duree_s': 0.0, 'max_s': 0.0, 'utilisateurs': set(), 'ouverts': 0})
+        a['lancements'] += 1
+        a['utilisateurs'].add(e['utilisateur'])
+        if e['fin']:
+            du = (e['fin'] - e['debut']).total_seconds()
+            a['duree_s'] += du
+            a['max_s'] = max(a['max_s'], du)
+        else:
+            a['ouverts'] += 1
+    serie = []
+    pas = dt.timedelta(minutes=5)
+    t = t0.replace(second=0, microsecond=0)
+    while t <= t1:
+        serie.append({'ts': t, 'lancements': sum(1 for e in fen if t <= e['debut'] < t + pas)})
+        t += pas
+    longs = sorted([e for e in p['liste'] if e['debut'] <= t1 and (e['fin'] or t1) >= t0 and ((e['fin'] or t1) - e['debut']).total_seconds() > 600],
+                   key=lambda e: -((e['fin'] or t1) - e['debut']).total_seconds())[:25]
+    # pics de la base : 10 % des relevés les plus chargés (lectures logiques) et les plus contendus (attentes de verrou)
+    marge = dt.timedelta(seconds=max(60, int(s['info'].get('intervalle_s') or 30) * 2))
+    pics = []
+    for cle, lib in (('bufreads_s', 'charge (lectures logiques)'), ('lockwts_min', 'attentes de verrou')):
+        vals = [e for e in s.get('profil', []) if e.get(cle) is not None]
+        if len(vals) < 10:
+            continue
+        seuil = sorted(e[cle] for e in vals)[int(len(vals) * 0.9)]
+        if seuil <= 0:
+            continue
+        haut = [e['ts'] for e in vals if e[cle] >= seuil]
+        tous = [e['ts'] for e in vals]
+        pres_h, pres_t = {}, {}
+        for ens, dico in ((haut, pres_h), (tous, pres_t)):
+            for ts in ens:
+                for nom in {x['programme'] for x in en_cours(p, ts, marge)}:
+                    dico[nom] = dico.get(nom, 0) + 1
+        for nom, n in pres_h.items():
+            ph, pt = n / float(len(haut)), pres_t.get(nom, 0) / float(len(tous))
+            if ph >= 0.3 and pt and ph / pt >= 1.5:
+                pics.append({'indicateur': lib, 'programme': nom, 'pic_pct': 100 * ph, 'global_pct': 100 * pt, 'facteur': ph / pt})
+    pics.sort(key=lambda x: -x['facteur'] * x['pic_pct'])
+    return {'fenetre': fen, 'par_prog': par_prog, 'serie': serie, 'longs': longs, 'pics': pics[:12], 'marge': marge}
+
+
+def regles_programmes(s):
+    a, r = s.get('aprog'), []
+    if not a:
+        return r
+    if a['pics']:
+        r.append(('haute' if a['pics'][0]['facteur'] >= 3 else 'moyenne', 'Programmes IRIUM', 'Programmes sur-représentés pendant les pics de la base',
+                  ' ; '.join('%s : présent dans %.0f %% des pics de %s (%.0f %% du temps sinon, ×%s)' % (x['programme'], x['pic_pct'], x['indicateur'], x['global_pct'],
+                                                                                                fmt_n(x['facteur'])) for x in a['pics'][:4]),
+                  'Programmes candidats à l\'origine de la charge ou des verrous : tracer leurs requêtes (onstat -g ses / -g sql pendant leur exécution, '
+                  'sysadmin:task « set sql user tracing »), et pour les traitements de masse, les déplacer hors des heures de saisie.'))
+    lg = [e for e in a['longs'] if ((e['fin'] or s['fin']) - e['debut']).total_seconds() > 1800]
+    if lg:
+        r.append(('moyenne', 'Programmes IRIUM', 'Programmes de longue durée pendant les heures d\'activité',
+                  ' ; '.join('%s (%s, %s → %s)' % (e['programme'], e['utilisateur'] or '?', e['debut'].strftime('%H:%M'), e['fin'].strftime('%H:%M') if e['fin'] else 'en cours')
+                             for e in lg[:5]),
+                  'Un traitement long garde des verrous et sollicite le cache pendant toute sa durée : vérifier qu\'il ne s\'exécute pas en même temps que la saisie, '
+                  'et qu\'il valide régulièrement ses transactions.'))
+    return r
+
+
+def section_programmes(s, t0, t1, marq):
+    a, p = s.get('aprog'), s.get('prog')
+    if not a:
+        return ''
+    o = ['<h3>Programmes IRIUM lancés (journal %s:%s)</h3>' % (esc(p['base']), esc(p['table']))]
+    o.append('<p class="d">%d programme(s) lancé(s) pendant l\'audit, %d programme(s) distinct(s). Colonnes utilisées : %s.</p>' % (
+        len(a['fenetre']), len(a['par_prog']), esc(', '.join('%s = %s' % (k, v) for k, v in sorted(p['roles'].items())))))
+    o.append(courbe('Programmes lancés par tranche de 5 minutes', [('lancements', COULEURS[0], a['serie'], 'lancements')], t0, t1, marq))
+    if a['pics']:
+        o.append('<h3>Programmes présents pendant les pics de la base</h3>' + tableau(
+            ['Programme', 'Pics de', 'Présent pendant les pics', 'Présent le reste du temps', 'Facteur'],
+            [[esc(x['programme']), esc(x['indicateur']), '%.0f %%' % x['pic_pct'], '%.0f %%' % x['global_pct'], '×' + fmt_n(x['facteur'])] for x in a['pics']]))
+    top = sorted(a['par_prog'].items(), key=lambda x: -(x[1]['duree_s'] or x[1]['lancements']))[:25]
+    o.append('<details open><summary>Programmes les plus utilisés</summary>%s</details>' % tableau(
+        ['Programme', 'Lancements', 'Utilisateurs', 'Durée cumulée', 'Durée max', 'Non terminés'],
+        [[esc(k), str(v['lancements']), str(len(v['utilisateurs'])), duree_txt(v['duree_s']) if p['avec_fin'] else '-',
+          duree_txt(v['max_s']) if p['avec_fin'] else '-', str(v['ouverts'])] for k, v in top]))
+    if a['longs']:
+        o.append('<details><summary>Programmes de plus de 10 minutes</summary>%s</details>' % tableau(
+            ['Programme', 'Utilisateur', 'Poste', 'Début', 'Fin', 'Durée'],
+            [[esc(e['programme']), esc(e['utilisateur']), esc(e['poste']), e['debut'].strftime('%d/%m %H:%M:%S'), e['fin'].strftime('%H:%M:%S') if e['fin'] else 'en cours',
+              duree_txt(((e['fin'] or s['fin']) - e['debut']).total_seconds())] for e in a['longs']]))
+    return ''.join(o)
+
+
+def duree_txt(sec):
+    sec = int(sec or 0)
+    return '%dh%02d' % (sec // 3600, sec % 3600 // 60) if sec >= 3600 else '%d min %02d s' % (sec // 60, sec % 60)
+
+
+def programmes_autour(serveurs, quand, minutes=5):
+    res = []
+    for s in serveurs:
+        p = s.get('prog')
+        if not p:
+            continue
+        a, z = quand - dt.timedelta(minutes=minutes), quand + dt.timedelta(minutes=minutes)
+        noms = {}
+        for e in p['liste']:
+            if (a <= e['debut'] <= z) or (e['debut'] <= quand and e['fin'] and e['fin'] >= quand):
+                noms[e['programme']] = noms.get(e['programme'], 0) + 1
+        res += sorted(noms.items(), key=lambda x: -x[1])[:6]
+    return res
+
+
+# --------------------------------------------------------------------------------------------
 # Chargement d'un serveur
 # --------------------------------------------------------------------------------------------
 def charger(d):
@@ -932,6 +1112,8 @@ def charger(d):
         ups = [e['uptime_s'] for e in s['entete'] if e.get('uptime_s')]
         s['obj'] = objets(d, s['inv'], ups[-1] if ups else None)
         s['ses_prof'], s['dio'] = sessions_profil(d), ouverture_chunks(d)
+        s['prog'] = programmes(d)
+        s['aprog'] = analyse_programmes(s)
         if not s['ckp']:
             s['ckp'] = ckp_log
     return s
@@ -1161,7 +1343,7 @@ def diagnostic(s):
                 'RESIDENT -1 empêche la mise en swap de la mémoire partagée (avec suffisamment de RAM).')
         if not cf.get('DBSPACETEMP'):
             add('info', 'Informix', 'Pas de DBSPACETEMP', 'DBSPACETEMP absent', 'Les tris et tables temporaires vont dans le rootdbs : définir des dbspaces temporaires dédiés.')
-        for x in regles_objets(s):
+        for x in regles_objets(s) + regles_programmes(s):
             add(*x)
         ram = s['mem'][-1]['total_mo'] if s['mem'] else 0
         fich = [x for x in s.get('dio', []) if x['type'] == 'fichier']
@@ -1606,6 +1788,7 @@ def section_informix(s):
         o.append('<h3>Journal du moteur (messages notables)</h3>' + tableau(['Heure', 'Gravité', 'Message'],
                                                                          [[h.strftime('%d/%m %H:%M:%S'), badge(g), '<span class="mono">%s</span>' % esc(m)] for h, g, m in s['journal'][:200]]))
     o.append(section_objets(s))
+    o.append(section_programmes(s, s['debut'], s['fin'], []))
     sqlb = blocs(os.path.join(s['dossier'], 'informix', 'sql_sysmaster.raw'))
     if sqlb:
         o.append('<details open><summary>Sessions et tables les plus sollicitées (sysmaster, %s)</summary><pre>%s</pre></details>' % (sqlb[-1][0].strftime('%H:%M'), esc(sqlb[-1][1][:40000])))
@@ -1709,7 +1892,7 @@ def section_objets(s):
 PRIO = {'critique': 'Immédiat', 'haute': 'P1', 'moyenne': 'P2', 'info': 'P3'}
 NATURE = {'CPU': 'Système', 'Disques': 'Système', 'Mémoire': 'Système', 'Système': 'Système', 'Virtualisation': 'Système', 'Réseau': 'Système',
           'Informix': 'Base de données', 'Réplication': 'Base de données', 'Stockage Informix': 'Base de données',
-          'Configuration': 'Configuration Informix (ONCONFIG)', 'Objets': 'Base de données et applicatif'}
+          'Configuration': 'Configuration Informix (ONCONFIG)', 'Objets': 'Base de données et applicatif', 'Programmes IRIUM': 'Applicatif'}
 
 
 def plan_recommandations(constats):
@@ -1800,23 +1983,79 @@ def section_recommandations(plan, serveurs, dossier_csv):
     return ''.join(o)
 
 
-def generer(serveurs, sortie):
+ORDRE_ROLES = ('bdd-principale', 'bdd-replica', 'bdd', 'batch', 'applications')
+
+
+def rang_role(s):
+    return min([i for i, r in enumerate(ORDRE_ROLES) if r in s['roles']] or [9]), s['nom']
+
+
+def lire_marqueurs(chemin):
+    res = []
+    for l in lire(chemin).splitlines():
+        p = l.split('|', 3)
+        if len(p) == 4 and p[0].isdigit():
+            res.append((dt.datetime.fromtimestamp(int(p[0])), p[2], p[3]))
+    return res
+
+
+def charger_campagne(d):
+    """Dossier de campagne sur le partage : un sous-dossier par serveur, campagne.conf, <serveur>.etat, marqueurs.txt."""
+    conf = dict(re.findall(r'^(\w+)=(.*)$', lire(os.path.join(d, 'campagne.conf')), re.M))
+    etats = {}
+    for f in glob.glob(os.path.join(d, '*.etat')):
+        e = dict(re.findall(r'^(\w+)=(.*)$', lire(f), re.M))
+        maj = dt.datetime.fromtimestamp(int(e['maj'])) if e.get('maj', '').isdigit() else None
+        etat = e.get('etat', '?')
+        if etat == 'en_cours' and maj and (dt.datetime.now() - maj).total_seconds() > 900:
+            etat = 'silencieux'
+        etats[os.path.basename(f)[:-5]] = {'etat': etat, 'maj': maj, 'roles': e.get('roles', ''), 'echantillons': e.get('echantillons', '')}
+    dossiers = sorted(x for x in glob.glob(os.path.join(d, '*')) if os.path.isfile(os.path.join(x, 'info.txt')))
+    attendus = conf.get('serveurs', '').split()
+    return {'nom': conf.get('nom', os.path.basename(os.path.normpath(d))), 'conf': conf, 'etats': etats, 'dossiers': dossiers,
+            'attendus': attendus, 'marqueurs': lire_marqueurs(os.path.join(d, 'marqueurs.txt')), 'arret': os.path.exists(os.path.join(d, 'ARRET'))}
+
+
+def section_campagne(c, serveurs):
+    noms = [x for x in c['attendus']]
+    noms += [x for x in c['etats'] if x not in noms] + [s['nom'] for s in serveurs if s['nom'] not in noms and s['nom'] not in c['etats']]
+    lib = {'en_cours': 'en cours', 'termine': 'terminé', 'silencieux': '<b style="color:#d03b3b">silencieux (> 15 min)</b>'}
+    lignes = []
+    for n in noms:
+        e = c['etats'].get(n)
+        s = next((x for x in serveurs if x['nom'] == n), None)
+        lignes.append([esc(n), esc((s or {}).get('roles') or (e or {}).get('roles', '-')), lib.get((e or {}).get('etat'), 'pas encore de données') if e else 'pas encore de données',
+                       s['debut'].strftime('%H:%M') if s else '-', s['fin'].strftime('%H:%M') if s else '-', esc((e or {}).get('echantillons', '-'))])
+    cf = c['conf']
+    return ('<section id="campagne"><h2>Campagne %s</h2><p class="d">Créée le %s par %s · début %s · durée %s · relevé toutes les %s s%s. '
+            'Ce rapport est régénéré pendant la campagne (toutes les 30 min) et à la fin ; il se recharge seul dans le navigateur tant que la campagne est en cours.</p>%s</section>' % (
+                esc(c['nom']), esc(cf.get('creee_le', '?')), esc(cf.get('par', '?')), esc(cf.get('debut') or 'immédiat'), esc(cf.get('duree', '?')),
+                esc(cf.get('intervalle', '?')), ' · <b>arrêt demandé</b>' if c['arret'] else '',
+                tableau(['Serveur', 'Rôle(s)', 'État', 'Premier relevé', 'Dernier relevé', 'Échantillons'], lignes)))
+
+
+def generer(serveurs, sortie, campagne=None):
+    serveurs = sorted(serveurs, key=rang_role)
     t0 = min(s['debut'] for s in serveurs)
     t1 = max(s['fin'] for s in serveurs)
-    marq = sorted([m for s in serveurs for m in s['marqueurs']])
+    marq = sorted([m for s in serveurs for m in s['marqueurs']] + (campagne['marqueurs'] if campagne else []))
     constats = [(s['nom'],) + c for s in serveurs for c in diagnostic(s)]
     constats.sort(key=lambda x: GRAV[x[1]][2])
     cor = correlations(serveurs)
     o = ['<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-         '<title>Audit de performance IRIUM</title><style>%s</style></head><body>' % CSS]
-    o.append('<header><h1>Audit de performance ERP IRIUM · Informix · RHEL</h1><div class="m"><span><b>Client :</b> Scania France</span>'
+         '%s<title>Audit de performance IRIUM</title><style>%s</style></head><body>' % (
+             '<meta http-equiv="refresh" content="300">' if campagne and any(e['etat'] == 'en_cours' for e in campagne['etats'].values()) else '', CSS)]
+    o.append('<header><h1>Audit de performance ERP IRIUM · Informix · RHEL</h1><div class="m"><span><b>Client :</b> Scania France</span>%s'
              '<span><b>Serveurs :</b> %s</span><span><b>Période :</b> %s, %s → %s</span><span><b>Généré le :</b> %s</span></div></header><main>'
-             % (esc(', '.join('%s (%s)' % (s['nom'], s['roles']) for s in serveurs)), t0.strftime('%d/%m/%Y'), t0.strftime('%H:%M'), t1.strftime('%H:%M'),
+             % ('<span><b>Campagne :</b> %s</span>' % esc(campagne['nom']) if campagne else '',
+                esc(', '.join('%s (%s)' % (s['nom'], s['roles']) for s in serveurs)), t0.strftime('%d/%m/%Y'), t0.strftime('%H:%M'), t1.strftime('%H:%M'),
                 dt.datetime.now().strftime('%d/%m/%Y %H:%M')))
-    o.append('<nav class="som"><a href="#diag">Diagnostic</a>%s%s%s<a href="#reco">Recommandations</a></nav>' % (
-        '<a href="#signal">Signalements</a>' if marq else '', '<a href="#corr">Corrélations</a>' if cor else '',
+    o.append('<nav class="som">%s<a href="#diag">Diagnostic</a>%s%s%s<a href="#reco">Recommandations</a></nav>' % (
+        '<a href="#campagne">Campagne</a>' if campagne else '', '<a href="#signal">Signalements</a>' if marq else '', '<a href="#corr">Corrélations</a>' if cor else '',
         ''.join('<a href="#srv-%d">%s</a>' % (i, esc('%s (%s)' % (s['nom'], s['roles'].split(',')[0]))) for i, s in enumerate(serveurs))))
     # synthèse
+    if campagne:
+        o.append(section_campagne(campagne, serveurs))
     principaux = [c for c in constats if c[1] in ('critique', 'haute')]
     synth = ('<b>Causes les plus probables :</b> ' + '; '.join('%s (%s)' % (c[3], c[0]) for c in principaux[:4]) + '.') if principaux else \
         'Aucun goulot majeur détecté sur la période observée : comparer avec une période de lenteur signalée (commande « marquer »).'
@@ -1827,11 +2066,13 @@ def generer(serveurs, sortie):
         rows = []
         for t, qui, txt in marq:
             obs = autour(serveurs, t)
-            rows.append([t.strftime('%H:%M:%S'), esc(txt), esc(qui),
-                         '<br>'.join('%s · %s : <b>%s</b> (moyenne %s)' % (esc(n), esc(l), fmt(v), fmt(m)) for n, l, v, m in obs) or '<span class="d">aucune anomalie nette à ± 5 min</span>'])
+            progs = programmes_autour(serveurs, t)
+            rows.append([t.strftime('%d/%m %H:%M:%S'), esc(txt), esc(qui),
+                         '<br>'.join('%s · %s : <b>%s</b> (moyenne %s)' % (esc(n), esc(l), fmt(v), fmt(m)) for n, l, v, m in obs) or '<span class="d">aucune anomalie nette à ± 5 min</span>',
+                         ', '.join('%s (%d)' % (esc(n), k) for n, k in progs) or '-'])
         o.append('<section id="signal"><h2>Signalements de lenteur</h2><p class="d">Pour chaque signalement, les indicateurs qui s\'écartent nettement '
                  'de leur moyenne dans les 5 minutes avant et après. Les signalements sont aussi tracés en pointillés rouges sur les graphiques.</p>%s</section>'
-                 % tableau(['Heure', 'Signalement', 'Par', 'Ce qui se passait'], rows))
+                 % tableau(['Heure', 'Signalement', 'Par', 'Ce qui se passait', 'Programmes IRIUM lancés ou en cours'], rows))
     if cor:
         o.append('<section id="corr"><h2>Corrélations entre serveurs</h2><p class="d">Coefficient de corrélation (minute par minute) entre le nombre de '
                  'traitements ipscrond en cours et les indicateurs de la base. Au-delà de 0,7, la coïncidence est forte.</p>%s</section>' % tableau(
@@ -1866,22 +2107,34 @@ def ouvrir_source(chemin, tmp):
 
 def main():
     p = argparse.ArgumentParser(description='Rapport d\'audit de performance IRIUM / Informix')
-    p.add_argument('sources', nargs='+', help='Dossiers ou archives .tar.gz produits par audit-irium.sh')
+    p.add_argument('sources', nargs='+', help='Dossier de campagne (partage), dossiers ou archives .tar.gz produits par audit-irium.sh')
     p.add_argument('-o', '--sortie', default='rapport_audit_irium_%s.html' % dt.datetime.now().strftime('%Y%m%d_%H%M'))
     a = p.parse_args()
     tmp = tempfile.mkdtemp(prefix='audit_irium_')
     try:
-        serveurs = []
+        serveurs, campagne = [], None
         for src in a.sources:
             d = ouvrir_source(src, tmp)
-            if not os.path.exists(os.path.join(d, 'info.txt')):
-                print('Ignoré (pas un dossier d\'audit) : %s' % src, file=sys.stderr)
-                continue
-            serveurs.append(charger(d))
-            print('Chargé : %s (%s)' % (serveurs[-1]['nom'], serveurs[-1]['roles']))
+            if os.path.exists(os.path.join(d, 'info.txt')):
+                dossiers = [d]
+            elif os.path.isdir(d):
+                campagne = charger_campagne(d)
+                dossiers = campagne['dossiers']
+                print('Campagne %s : %d serveur(s)' % (campagne['nom'], len(dossiers)))
+            else:
+                dossiers = []
+            if not dossiers:
+                print('Ignoré (ni audit ni campagne) : %s' % src, file=sys.stderr)
+            for x in dossiers:
+                try:
+                    serveurs.append(charger(x))
+                except Exception as e:   # un serveur en cours d'écriture ne doit pas empêcher le rapport central
+                    print('Serveur ignoré (%s) : %s' % (x, e), file=sys.stderr)
+                    continue
+                print('Chargé : %s (%s)' % (serveurs[-1]['nom'], serveurs[-1]['roles']))
         if not serveurs:
             sys.exit('Aucun audit valide.')
-        constats = generer(serveurs, a.sortie)
+        constats = generer(serveurs, a.sortie, campagne)
         print('\nRapport : %s' % os.path.abspath(a.sortie))
         print('Plan d\'actions et classements (CSV) : %s_inventaire/' % os.path.abspath(os.path.splitext(a.sortie)[0]))
         for c in constats[:8]:

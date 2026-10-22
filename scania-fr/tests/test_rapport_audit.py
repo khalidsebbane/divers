@@ -206,3 +206,57 @@ def test_pression_memoire_noyau(tmp_path):
     assert s['buddy'][0]['bloc_ko'] == 8
     c = {x[2]: x for x in r.diagnostic(s)}['Pression mémoire du noyau (récupération et compactage)']
     assert c[0] == 'haute' and '8 Ko' in c[3]
+
+
+def ecrire_programmes(d, pic_debut=10 * 60, pic_fin=20 * 60):
+    """Journal agr_lds : saisies réparties toute la matinée, facturation lancée pendant le pic de verrous."""
+    with open(os.path.join(d, 'informix', 'programmes_table.txt'), 'w') as f:
+        f.write('base=magix_prod\ntable=agr_lds\ncolonne_date=alds_open\ncolonnes=alds_id,alds_user,alds_open,alds_close,alds_prog,alds_complement,alds_tty\n')
+    import datetime as dt
+    lignes = []
+    for i in range(0, 30 * 60, 30):
+        t = dt.datetime.fromtimestamp(T0 + i)
+        lignes.append('%d|u%d|%s|%s|irium|Xp_saisie|pts/%d|' % (i, i % 7, t.strftime('%Y-%m-%d %H:%M:%S'), (t + dt.timedelta(seconds=20)).strftime('%Y-%m-%d %H:%M:%S'), i % 5))
+    t = dt.datetime.fromtimestamp(T0 + pic_debut)
+    lignes.append('9999|ipscron|%s|%s|irium|Xp_facturation|cron|' % (t.strftime('%Y-%m-%d %H:%M:%S'), dt.datetime.fromtimestamp(T0 + pic_fin).strftime('%Y-%m-%d %H:%M:%S')))
+    with open(os.path.join(d, 'informix', 'programmes_final.unl'), 'w') as f:
+        f.write('\n'.join(lignes) + '\n')
+
+
+def test_programmes_irium_et_pics(tmp_path):
+    d = str(tmp_path / 'srv')
+    fabriquer(d)
+    ecrire_programmes(d)
+    s = r.charger(d)
+    assert s['prog']['roles']['debut'] == 'alds_open' and s['prog']['roles']['fin'] == 'alds_close'
+    assert s['prog']['roles']['programme'] == 'alds_prog'
+    noms = {x['programme'] for x in s['aprog']['pics']}
+    assert 'irium (Xp_facturation)' in noms and 'irium (Xp_saisie)' not in noms
+    titres = {c[2]: c for c in r.diagnostic(s)}
+    assert 'Xp_facturation' in titres['Programmes sur-représentés pendant les pics de la base'][3]
+    import datetime as dt
+    assert ('irium (Xp_facturation)', 1) in r.programmes_autour([s], dt.datetime.fromtimestamp(T0 + 15 * 60))
+
+
+def test_campagne_rapport_central(tmp_path):
+    camp = tmp_path / 'campagnes' / 'matin'
+    bdd, app = str(camp / 'x0296se'), str(camp / 'x0295se')
+    fabriquer(bdd)
+    ecrire_programmes(bdd)
+    fabriquer(app, incident=False)
+    with open(os.path.join(app, 'info.txt'), 'w') as f:
+        f.write('serveur=x0295se\nroles=applications-irium\ninformix=0\nnb_cpu=8\n')
+    with open(os.path.join(bdd, 'info.txt'), 'w') as f:
+        f.write('serveur=x0296se\nroles=bdd-principale\ninformix=1\nnb_cpu=4\n')
+    (camp / 'campagne.conf').write_text('nom=matin\nduree=5h\nintervalle=30\nserveurs=x0296se x0295se x0297se\n')
+    (camp / 'x0296se.etat').write_text('etat=termine\nmaj=%d\nroles=bdd-principale\nechantillons=30\n' % T0)
+    (camp / 'marqueurs.txt').write_text('%d|x|support@x0295se|Lenteur centrale\n' % (T0 + 16 * 60))
+    c = r.charger_campagne(str(camp))
+    assert len(c['dossiers']) == 2 and c['marqueurs'][0][2] == 'Lenteur centrale'
+    serveurs = [r.charger(x) for x in c['dossiers']]
+    sortie = str(camp / 'rapport_matin.html')
+    r.generer(serveurs, sortie, c)
+    h = open(sortie, encoding='utf-8').read()
+    assert 'Campagne matin' in h and 'Lenteur centrale' in h and 'pas encore de données' in h      # x0297se attendu mais absent
+    assert h.index('Serveur x0296se') < h.index('Serveur x0295se')                                  # base en premier
+    assert 'Xp_facturation' in h and 'http-equiv="refresh"' not in h                               # campagne terminée : pas de rechargement

@@ -2,26 +2,32 @@
 # =============================================================================================
 # Audit de performance ERP IRIUM / Informix / RHEL - Scania France
 #
-# Collecte en LECTURE SEULE toutes les métriques utiles pour identifier la source des lenteurs.
-# À lancer en root sur chaque serveur : base principale, réplica (HDR/RSS), serveurs d'applications
-# IRIUM, serveur des tâches d'arrière-plan (ipscrond). Le rôle du serveur est détecté automatiquement.
+# Collecte en LECTURE SEULE l'état des serveurs, de la base Informix et des programmes IRIUM, pour identifier
+# la source des lenteurs. Le rôle de chaque serveur est détecté automatiquement (base principale, secondaire,
+# applications IRIUM / Genero, tâches ipscrond).
 #
+# MODE CAMPAGNE (recommandé) : script et rapport déposés sur un partage commun (NFS) monté sur tous les serveurs.
+#   ./audit-irium.sh campagne demarrer [nom] --serveurs "x0296se x0297se x0295se" [--debut 07:30] [--duree 5h]
+#        [--intervalle 30] [--bdd-hote x0296se --bdd-port sqlexec]
+#        lance la collecte sur chaque serveur (SSH root ; sinon affiche la commande « rejoindre » à lancer)
+#   ./audit-irium.sh campagne rejoindre [nom]       à lancer sur un serveur si le SSH root n'est pas possible
+#   ./audit-irium.sh campagne etat [nom]            avancement de chaque serveur
+#   ./audit-irium.sh marquer "lenteur saisie commande agence Lyon"   signalement utilisateur (depuis n'importe quel serveur)
+#   ./audit-irium.sh campagne rapport [nom]         rapport CENTRAL à tout moment (données partielles ou finales)
+#   ./audit-irium.sh campagne arreter [nom]         arrêt anticipé de tous les serveurs
+#   Résultat : <partage>/campagnes/<nom>/rapport_<nom>.html : un seul rapport pour tous les serveurs, régénéré
+#   automatiquement pendant la campagne et à la fin ; données de chaque serveur dans <partage>/campagnes/<nom>/<serveur>/.
+#
+# MODE AUTONOME (un serveur) :
 #   ./audit-irium.sh instantane                                   photo complète (2 à 3 minutes)
-#   ./audit-irium.sh supervision --duree 4h [--intervalle 30]      supervision d'une matinée (en arrière-plan)
-#        [--debut 07:30]            attendre cette heure avant de commencer
-#        [--bdd-hote srv-bdd]       (serveurs apps / batch) mesurer la latence vers la base
-#        [--bdd-port 9088|sqlexec]  port ou service du listener Informix (sqlhosts)
-#        [--motifs 'ipscrond|fglrun|...']  processus IRIUM à suivre
-#        [--sortie /var/tmp/scania-fr]     dossier de sortie
-#        [--sans-sql]               ne pas interroger sysmaster par SQL
-#        [--sans-rapport]           ne pas générer le rapport HTML en fin d'audit
-#   ./audit-irium.sh marquer "lenteur saisie commande agence Lyon"   noter un signalement utilisateur
+#   ./audit-irium.sh supervision --duree 4h [--intervalle 30] [--debut 07:30] [--bdd-hote ...] [--bdd-port ...]
 #   ./audit-irium.sh statut | arreter
 #
-# Résultat : <sortie>/<serveur>_<date>/ avec rapport_<serveur>.html (diagnostic et recommandations) + archive .tar.gz.
-# Rapport consolidé de plusieurs serveurs : rapport_audit.py archive1.tar.gz archive2.tar.gz ...
-# Impact : quelques commandes « onstat » (lecture de la mémoire partagée) et lectures de /proc par minute.
-# Aucune commande lourde (oncheck, update statistics...) n'est lancée, rien n'est modifié.
+# Options communes : [--partage DIR] (défaut : dossier du script)  [--sortie /var/tmp/scania-fr] (travail local)
+#   [--motifs 'ipscrond|fglrun|...']  [--table-programmes agr_lds]  [--sans-sql]  [--sans-rapport]
+#   [--informixdir DIR --informixserver NOM --onconfig FICHIER]
+# Impact : quelques commandes « onstat » (lecture de la mémoire partagée), lectures de /proc et requêtes sysmaster /
+# catalogue en lecture seule. Aucune commande lourde (oncheck, update statistics...) n'est lancée, rien n'est modifié.
 # =============================================================================================
 set -uo pipefail
 export LC_ALL=C LANG=C
@@ -35,9 +41,12 @@ BDD_PORT=""
 ROLE=auto
 AVEC_SQL=1
 RAPPORT=1
+SCRIPT="$(readlink -f "$0")"
+PARTAGE="$(dirname "$SCRIPT")"
+CAMPAGNE="" SERVEURS="" PROG_TABLE=agr_lds PROG_BASE="" PROG_DATE="" PROG_DEPUIS=""
 MOTIFS='ipscrond|fglrun|fglgo|fglrunner|irium|ips[a-z_]*'
 INFORMIXDIR_OPT="" INFORMIXSERVER_OPT="" ONCONFIG_OPT=""
-HOTE=$(hostname -s 2>/dev/null || hostname)
+HOTE="${AUDIT_HOTE:-$(hostname -s 2>/dev/null || hostname)}"   # AUDIT_HOTE : tests uniquement
 EN_COURS_LIEN="$SORTIE/en-cours"
 
 # ---------------------------------------------------------------------------------------------
@@ -170,6 +179,44 @@ statique_informix() {
   [ -f "$msg" ] && tail -n 20000 "$msg" > "$d/online_log.txt"
   ouverture_chunks
   inventaire_sql
+  programmes_init
+}
+
+# Journal des programmes IRIUM (table agr_lds : un enregistrement par programme lancé) sur la base principale
+programmes_init() {
+  [ "$IFX" -eq 1 ] && [ "$AVEC_SQL" -eq 1 ] && existe dbaccess || return 0
+  [[ "$ROLE_TXT" == *bdd-principale* || "$ROLE_TXT" == bdd ]] || return 0
+  [[ "$PROG_TABLE" =~ ^[A-Za-z0-9_]+$ ]] || return 0
+  local v="$DOSSIER/informix/inventaire" b t="$DOSSIER/informix/inventaire/tmp_prog.unl"
+  for b in $(cut -d'|' -f1 "$v/bases.unl" 2>/dev/null | head -10); do
+    [[ "$b" =~ ^[A-Za-z0-9_]+$ ]] || continue
+    unl "$b" "$t" "SELECT TRIM(c.colname), c.coltype FROM syscolumns c, systables t WHERE c.tabid = t.tabid AND t.tabname = '$PROG_TABLE' ORDER BY c.colno" || continue
+    [ -s "$t" ] && { PROG_BASE="$b"; break; }
+  done
+  [ -n "$PROG_BASE" ] || { rm -f "$t"; journal "Table des programmes $PROG_TABLE introuvable : journal applicatif non collecté"; return 0; }
+  PROG_DATE="$(cut -d'|' -f1 "$t" | grep -iE '_open$' | head -1)"
+  [ -n "$PROG_DATE" ] || PROG_DATE="$(cut -d'|' -f1 "$t" | grep -iE 'debut|date' | head -1)"
+  { echo "base=$PROG_BASE"; echo "table=$PROG_TABLE"; echo "colonne_date=$PROG_DATE"; echo "colonnes=$(cut -d'|' -f1 "$t" | paste -sd, -)"; } > "$DOSSIER/informix/programmes_table.txt"
+  rm -f "$t"
+  [ -n "$PROG_DATE" ] || { PROG_BASE=""; journal "Pas de colonne de date dans $PROG_TABLE : journal applicatif non collecté"; return 0; }
+  PROG_DEPUIS="$(date -d '-1 hour' '+%F %T')"   # programmes déjà en cours au démarrage
+  echo "depuis=$PROG_DEPUIS" >> "$DOSSIER/informix/programmes_table.txt"
+  journal "Journal des programmes IRIUM : $PROG_BASE:$PROG_TABLE (colonne $PROG_DATE)"
+}
+
+programmes_releve() {   # nouveaux programmes depuis le relevé précédent
+  [ -n "$PROG_BASE" ] || return 0
+  local t="$DOSSIER/informix/inventaire/tmp_prog.unl" maint; maint="$(date '+%F %T')"
+  if unl "$PROG_BASE" "$t" "SELECT * FROM $PROG_TABLE WHERE $PROG_DATE >= '$PROG_DEPUIS' AND $PROG_DATE < '$maint'"; then
+    { horodatage; cat "$t" 2>/dev/null; echo; } >> "$DOSSIER/informix/programmes.raw"; PROG_DEPUIS="$maint"
+  fi
+  rm -f "$t"
+}
+
+programmes_final() {    # relecture complète en fin d'audit : dates de fin des programmes terminés entre-temps
+  [ -n "$PROG_BASE" ] || return 0
+  local d0; d0="$(awk -F= '$1=="depuis"{print $2}' "$DOSSIER/informix/programmes_table.txt")"
+  unl "$PROG_BASE" "$DOSSIER/informix/programmes_final.unl" "SELECT * FROM $PROG_TABLE WHERE $PROG_DATE >= '$d0'" || rm -f "$DOSSIER/informix/programmes_final.unl"
 }
 
 # DIRECT_IO réellement actif ? Drapeaux d'ouverture des chunks par les processus oninit (O_DIRECT = 040000)
@@ -192,6 +239,7 @@ ouverture_chunks() {
 # Exécute une requête SQL en lecture seule et écrit le résultat au format unload (séparateur |)
 unl() {   # unl <base> <fichier> <requête>
   [ "$IFX" -eq 1 ] && [ "$AVEC_SQL" -eq 1 ] && existe dbaccess || return 1
+  mkdir -p "$DOSSIER/informix/inventaire"
   timeout 300 dbaccess "$1" - >> "$DOSSIER/informix/inventaire/erreurs_sql.txt" 2>&1 <<EOSQL
 SET ISOLATION TO DIRTY READ;
 SET LOCK MODE TO WAIT 5;
@@ -312,6 +360,7 @@ echantillon_informix_lent() {   # toutes les 5 minutes
   brut "$i/onstat_dri.raw" onstat -g dri
   brut "$i/onstat_x.raw" onstat -x
   brut "$i/onstat_wai.raw" onstat -g wai
+  programmes_releve
 }
 
 echantillon_informix_lourd() {  # toutes les 15 minutes
@@ -331,7 +380,6 @@ profils_objets() {
   [ "$IFX" -eq 1 ] || return 0
   local i="$DOSSIER/informix" t="$DOSSIER/informix/inventaire/tmp.unl"
   brut "$i/onstat_ppf.raw" onstat -g ppf
-  mkdir -p "$i/inventaire"
   if unl sysmaster "$t" "SELECT TRIM(dbsname), TRIM(tabname), isreads, bufreads, pagreads, seqscans, lockreqs, lockwts, iswrites, bufwrites, pagwrites FROM sysptprof WHERE dbsname NOT IN ('sysmaster','sysadmin','sysutils','sysuser') AND (bufreads > 0 OR pagreads > 0)"; then
     { horodatage; cat "$t" 2>/dev/null; echo; } >> "$i/profil_tables.raw"
   fi
@@ -352,7 +400,7 @@ preparer() {
     echo "serveur=$HOTE"; echo "roles=$ROLE_TXT"; echo "informix=$IFX"
     echo "INFORMIXDIR=${INFORMIXDIR:-}"; echo "INFORMIXSERVER=${INFORMIXSERVER:-}"; echo "ONCONFIG=${ONCONFIG:-}"
     echo "intervalle_s=$INTERVALLE"; echo "bdd_hote=$BDD_HOTE"; echo "bdd_port=$BDD_PORT"; echo "motifs=$MOTIFS"
-    echo "nb_cpu=$(nproc)"; echo "debut=$(date '+%F %T')"; echo "version_script=1.0"
+    echo "nb_cpu=$(nproc)"; echo "debut=$(date '+%F %T')"; echo "version_script=2.0"; echo "campagne=$CAMPAGNE"
   } > "$DOSSIER/info.txt"
   ln -sfn "$DOSSIER" "$EN_COURS_LIEN"
   journal "Audit $HOTE - rôle(s) : $ROLE_TXT - Informix : $([ "$IFX" -eq 1 ] && echo "oui ($INFORMIXSERVER)" || echo non)"
@@ -363,26 +411,171 @@ terminer() {
   [ "$IFX" -eq 1 ] && { timeout 60 onstat -g ckp > "$DOSSIER/informix/fin_onstat_ckp.txt" 2>&1
     local msg; msg="$(chemin_msgpath)"; [ -f "$msg" ] && tail -n 20000 "$msg" > "$DOSSIER/informix/fin_online_log.txt"; }
   rm -f "$EN_COURS_LIEN" "$SORTIE/supervision.pid"
-  generer_rapport
+  if [ -n "$CAMPAGNE" ]; then
+    synchroniser termine
+    rapport_central final
+  else
+    generer_rapport
+  fi
   tar -C "$SORTIE" -czf "$DOSSIER.tar.gz" "$(basename "$DOSSIER")" 2>/dev/null
   journal "Terminé. Données : $DOSSIER - Archive : $DOSSIER.tar.gz"
 }
 
 # Rapport HTML (diagnostic + recommandations) généré automatiquement à la fin de l'audit
+trouver_python() {   # Python 3.6+ requis (RHEL 7 : souvent Python 2.7 seul)
+  local py
+  for py in /usr/libexec/platform-python python3 python3.6 python; do
+    existe "$py" && "$py" -c 'import sys; sys.exit(sys.version_info < (3, 6))' 2>/dev/null && { echo "$py"; return 0; }
+  done
+  return 1
+}
+
 generer_rapport() {
   [ "$RAPPORT" -eq 1 ] || return 0
-  local py r; r="$(dirname "$(readlink -f "$0")")/rapport_audit.py"
+  local py r; r="$(dirname "$SCRIPT")/rapport_audit.py"
   [ -f "$r" ] || { journal "rapport_audit.py absent à côté du script : rapport non généré"; return 0; }
-  local ok=""
-  for py in /usr/libexec/platform-python python3 python3.6 python; do   # Python 3.6+ requis (RHEL 7 : souvent Python 2.7 seul)
-    existe "$py" && "$py" -c 'import sys; sys.exit(sys.version_info < (3, 6))' 2>/dev/null && { ok=1; break; }
-  done
-  [ -n "$ok" ] || { journal "Python 3.6+ absent : générer le rapport sur un autre poste (rapport_audit.py <archive>)"; return 0; }
+  py="$(trouver_python)" || { journal "Python 3.6+ absent : générer le rapport sur un autre poste (rapport_audit.py <archive>)"; return 0; }
   if timeout 600 "$py" "$r" "$DOSSIER" -o "$DOSSIER/rapport_${HOTE}.html" >> "$DOSSIER/journal.txt" 2>&1; then
     journal "Rapport : $DOSSIER/rapport_${HOTE}.html (recommandations en fin de rapport)"
   else
     journal "Échec de génération du rapport (voir journal.txt) : relancer rapport_audit.py sur l'archive"
   fi
+}
+
+# ---------------------------------------------------------------------------------------------
+# Campagne : collecte simultanée de tous les serveurs vers un partage commun, rapport central unique
+# ---------------------------------------------------------------------------------------------
+camp_dir() { echo "$PARTAGE/campagnes/$CAMPAGNE"; }
+
+derniere_campagne() { ls -1t "$PARTAGE/campagnes" 2>/dev/null | head -1; }
+
+lire_conf_campagne() {   # charge campagne.conf (clé=valeur, sans exécution)
+  local f k v; f="$(camp_dir)/campagne.conf"
+  [ -f "$f" ] || { echo "Campagne « $CAMPAGNE » introuvable dans $PARTAGE/campagnes." >&2; exit 1; }
+  while IFS='=' read -r k v; do
+    case "$k" in
+      duree) DUREE="$v";; intervalle) INTERVALLE="$v";; debut) DEBUT="$v";; bdd_hote) BDD_HOTE="$v";; bdd_port) BDD_PORT="$v";;
+      motifs) MOTIFS="$v";; sans_sql) [ "$v" = 1 ] && AVEC_SQL=0;; table_programmes) PROG_TABLE="$v";; serveurs) SERVEURS="$v";;
+    esac
+  done < "$f"
+}
+
+# Copie du dossier local vers le partage (le travail reste local : un partage lent ou figé ne bloque pas la collecte)
+synchroniser() {
+  [ -n "$CAMPAGNE" ] || return 0
+  local dest; dest="$(camp_dir)/$HOTE"
+  timeout 120 mkdir -p "$dest" 2>/dev/null
+  if existe rsync; then timeout 300 rsync -a "$DOSSIER/" "$dest/" 2>/dev/null; else timeout 300 cp -ru "$DOSSIER/." "$dest/" 2>/dev/null; fi
+  { echo "etat=${1:-en_cours}"; echo "maj=$(date +%s)"; echo "roles=$ROLE_TXT"; echo "intervalle=$INTERVALLE"
+    echo "echantillons=$(grep -c '^###' "$DOSSIER/series/stat.raw" 2>/dev/null || echo 0)"; echo "dossier_local=$DOSSIER"; } \
+    > "$(camp_dir)/.$HOTE.etat.tmp" 2>/dev/null && mv -f "$(camp_dir)/.$HOTE.etat.tmp" "$(camp_dir)/$HOTE.etat" 2>/dev/null \
+    || journal "Partage $(camp_dir) inaccessible : données conservées localement ($DOSSIER)"
+}
+
+arret_campagne_demande() { [ -n "$CAMPAGNE" ] && timeout 10 test -e "$(camp_dir)/ARRET"; }
+
+# Rapport central de la campagne (tous les serveurs) ; verrou pour ne pas le générer deux fois en même temps
+rapport_central() {   # rapport_central [final|periodique]
+  [ "$RAPPORT" -eq 1 ] || return 0
+  local c; c="$(camp_dir)"
+  local py r="$PARTAGE/rapport_audit.py" sortie="$c/rapport_${CAMPAGNE}.html" verrou="$c/.rapport.verrou" n=0
+  [ -f "$r" ] || r="$(dirname "$SCRIPT")/rapport_audit.py"
+  [ -f "$r" ] || return 0
+  py="$(trouver_python)" || { [ "${1:-}" = final ] && journal "Python 3.6+ absent ici : le rapport central sera produit par un autre serveur (ou « campagne rapport »)"; return 0; }
+  if [ "${1:-}" = periodique ] && [ -f "$sortie" ] && [ $(( $(date +%s) - $(stat -c %Y "$sortie") )) -lt 1500 ]; then return 0; fi
+  if [ "${1:-}" = final ]; then   # attendre la fin des autres serveurs (15 min au plus) pour un rapport complet
+    local t_lim=$(( $(date +%s) + 900 ))
+    while [ "$(date +%s)" -lt "$t_lim" ] && grep -l '^etat=en_cours' "$c"/*.etat 2>/dev/null | while read -r f; do
+        [ $(( $(date +%s) - $(awk -F= '$1=="maj"{print $2}' "$f") )) -lt 900 ] && echo x; done | grep -q x; do
+      sleep 20
+    done
+  fi
+  find "$verrou" -maxdepth 0 -mmin +15 -exec rmdir {} \; 2>/dev/null   # verrou abandonné
+  until mkdir "$verrou" 2>/dev/null; do
+    [ "${1:-}" = periodique ] && return 0
+    n=$((n + 1)); [ "$n" -gt 60 ] && return 0; sleep 5
+  done
+  if timeout 900 nice -n 19 "$py" "$r" "$c" -o "$sortie" > "$c/.rapport_${HOTE}.log" 2>&1; then
+    journal "Rapport central mis à jour : $sortie"
+  else
+    journal "Échec du rapport central (voir $c/.rapport_${HOTE}.log)"
+  fi
+  rmdir "$verrou" 2>/dev/null
+}
+
+est_local() { [ "$1" = "$HOTE" ] || [ "$1" = "$(hostname -f 2>/dev/null)" ] || [ "$1" = localhost ]; }
+
+cmd_campagne() {
+  local sous="${1:-}"; shift || true
+  [ -n "${1:-}" ] && [[ "$1" != --* ]] && [ "$sous" != marquer ] && { CAMPAGNE="$1"; shift; }
+  analyser_options "$@"
+  [ "$sous" = marquer ] && { [ -n "$CAMPAGNE" ] || CAMPAGNE="$(derniere_campagne)"; cmd_marquer "${RESTE[@]:-}"; return; }
+  case "$sous" in
+    demarrer) [ -n "$CAMPAGNE" ] || CAMPAGNE="$(date +%Y%m%d)" ;;
+    *) [ -n "$CAMPAGNE" ] || CAMPAGNE="$(derniere_campagne)"; [ -n "$CAMPAGNE" ] || { echo "Aucune campagne dans $PARTAGE/campagnes." >&2; exit 1; } ;;
+  esac
+  [[ "$CAMPAGNE" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Nom de campagne invalide : $CAMPAGNE" >&2; exit 1; }
+  local c; c="$(camp_dir)"
+  case "$sous" in
+    demarrer)
+      [ "$(id -u)" -eq 0 ] || { echo "À lancer en root." >&2; exit 1; }
+      mkdir -p "$c" 2>/dev/null && touch "$c/.test_ecriture" 2>/dev/null && rm -f "$c/.test_ecriture" \
+        || { echo "Écriture impossible dans $c (partage en lecture seule ou « root_squash » ?)." >&2; exit 1; }
+      [ -f "$c/campagne.conf" ] && grep -lq '^etat=en_cours' "$c"/*.etat 2>/dev/null && { echo "La campagne $CAMPAGNE est déjà en cours." >&2; exit 1; }
+      rm -f "$c/ARRET"
+      { echo "nom=$CAMPAGNE"; echo "creee_le=$(date '+%F %T')"; echo "par=${SUDO_USER:-${USER:-root}}@$HOTE"; echo "debut=$DEBUT"; echo "duree=$DUREE"
+        echo "intervalle=$INTERVALLE"; echo "bdd_hote=$BDD_HOTE"; echo "bdd_port=$BDD_PORT"; echo "motifs=$MOTIFS"; echo "sans_sql=$((1 - AVEC_SQL))"
+        echo "table_programmes=$PROG_TABLE"; echo "serveurs=${SERVEURS:-$HOTE}"; } > "$c/campagne.conf"
+      echo "Campagne $CAMPAGNE : $c"
+      local srv
+      for srv in ${SERVEURS:-$HOTE}; do
+        if est_local "$srv"; then
+          local ifx=(); [ -n "$INFORMIXDIR_OPT" ] && ifx+=(--informixdir "$INFORMIXDIR_OPT")
+          [ -n "$INFORMIXSERVER_OPT" ] && ifx+=(--informixserver "$INFORMIXSERVER_OPT"); [ -n "$ONCONFIG_OPT" ] && ifx+=(--onconfig "$ONCONFIG_OPT")
+          bash "$SCRIPT" campagne rejoindre "$CAMPAGNE" --partage "$PARTAGE" --sortie "$SORTIE" "${ifx[@]}" | sed "s/^/  [$srv] /"
+        elif ssh -n -o BatchMode=yes -o ConnectTimeout=5 "root@$srv" "bash '$SCRIPT' campagne rejoindre '$CAMPAGNE' --partage '$PARTAGE'" 2>&1 | sed "s/^/  [$srv] /"; then
+          :
+        else
+          echo "  [$srv] SSH impossible : lancer sur ce serveur (en root) : bash $SCRIPT campagne rejoindre $CAMPAGNE"
+        fi
+      done
+      echo; echo "Suivi : $SCRIPT campagne etat   ·   signalement : $SCRIPT marquer \"texte\"   ·   rapport à tout moment : $SCRIPT campagne rapport"
+      ;;
+    rejoindre)
+      lire_conf_campagne
+      [ -n "$BDD_HOTE" ] && est_local "$BDD_HOTE" && BDD_HOTE=""   # pas de mesure de latence de la base vers elle-même
+      cmd_supervision
+      ;;
+    etat)
+      lire_conf_campagne
+      echo "Campagne $CAMPAGNE ($c) : début ${DEBUT:-immédiat}, durée $DUREE, intervalle $INTERVALLE s"
+      [ -e "$c/ARRET" ] && echo "Arrêt demandé."
+      printf '%-14s %-34s %-10s %-20s %s\n' Serveur 'Rôle(s)' État 'Dernier relevé' Échantillons
+      local f now; now=$(date +%s)
+      for srv in $( { printf '%s\n' $SERVEURS; ls "$c" 2>/dev/null | sed -n 's/\.etat$//p'; } | awk '!v[$0]++'); do
+        f="$c/$srv.etat"
+        if [ -f "$f" ]; then
+          local etat maj roles ech
+          etat="$(awk -F= '$1=="etat"{print $2}' "$f")"; maj="$(awk -F= '$1=="maj"{print $2}' "$f")"
+          roles="$(awk -F= '$1=="roles"{print $2}' "$f")"; ech="$(awk -F= '$1=="echantillons"{print $2}' "$f")"
+          [ "$etat" = en_cours ] && [ $(( now - maj )) -gt 900 ] && etat="silencieux"
+          printf '%-14s %-34s %-10s %-20s %s\n' "$srv" "$roles" "$etat" "$(date -d "@$maj" '+%d/%m %H:%M:%S')" "$ech"
+        else
+          printf '%-14s %-34s %-10s\n' "$srv" "-" "$([ -n "$DEBUT" ] && echo programmé || echo absent)"
+        fi
+      done
+      [ -f "$c/marqueurs.txt" ] && echo "Signalements : $(wc -l < "$c/marqueurs.txt")"
+      [ -f "$c/rapport_$CAMPAGNE.html" ] && echo "Rapport central : $c/rapport_$CAMPAGNE.html (mis à jour le $(date -r "$c/rapport_$CAMPAGNE.html" '+%d/%m %H:%M'))"
+      ;;
+    rapport)
+      local py; py="$(trouver_python)" || { echo "Python 3.6+ requis sur ce serveur pour générer le rapport." >&2; exit 1; }
+      "$py" "$PARTAGE/rapport_audit.py" "$c" -o "$c/rapport_${CAMPAGNE}.html"
+      ;;
+    arreter)
+      touch "$c/ARRET" && echo "Arrêt demandé : chaque serveur termine son relevé en cours, synchronise ses données puis le rapport central est produit."
+      ;;
+    *) sed -n '3,31p' "$SCRIPT"; exit 1 ;;
+  esac
 }
 
 cmd_instantane() {
@@ -397,28 +590,34 @@ cmd_instantane() {
   done
   echantillon_informix_lent
   profils_objets
+  programmes_final
   terminer
 }
 
 boucle_supervision() {
   local fin=$(( $(date +%s) + $(duree_s "$DUREE") )) n=0
-  local p5=$(( 300 / INTERVALLE )) p15=$(( 900 / INTERVALLE )) p2=$(( 120 / INTERVALLE ))
-  [ "$p5" -ge 1 ] || p5=1; [ "$p15" -ge 1 ] || p15=1; [ "$p2" -ge 1 ] || p2=1
+  local p5=$(( 300 / INTERVALLE )) p15=$(( 900 / INTERVALLE )) p2=$(( 120 / INTERVALLE )) p30=$(( 1800 / INTERVALLE ))
+  [ "$p5" -ge 1 ] || p5=1; [ "$p15" -ge 1 ] || p15=1; [ "$p2" -ge 1 ] || p2=1; [ "$p30" -ge 1 ] || p30=1
   journal "Supervision jusqu'à $(date -d "@$fin" '+%H:%M') (un échantillon toutes les $INTERVALLE s)"
   trap 'journal "Arrêt demandé"; terminer; exit 0' TERM INT
   while [ "$(date +%s)" -lt "$fin" ]; do
+    arret_campagne_demande && { journal "Arrêt de la campagne demandé"; break; }
     local t0; t0=$(date +%s)
     echantillon_systeme
     echantillon_informix
     (( n % p2 == 0 )) && echantillon_latence
     (( n % p5 == 0 )) && { echantillon_processus; echantillon_informix_lent; }
     (( n % p15 == 0 )) && echantillon_informix_lourd
+    (( n % p5 == 0 )) && synchroniser
+    # rapport central intermédiaire toutes les 30 min, généré par un serveur sans base Informix (pas de charge sur la base)
+    (( n > 0 && n % p30 == 0 )) && [ -n "$CAMPAGNE" ] && [ "$IFX" -eq 0 ] && ( rapport_central periodique ) &
     n=$((n + 1))
     local reste=$(( INTERVALLE - ($(date +%s) - t0) ))
     if [ "$reste" -gt 0 ]; then sleep "$reste" & wait $!; fi   # « wait » : l'arrêt est pris en compte immédiatement
   done
   echantillon_informix_lent
   profils_objets
+  programmes_final
   terminer
 }
 
@@ -431,8 +630,10 @@ executer_supervision() {   # processus détaché (lancé par cmd_supervision)
     trap - TERM INT
   fi
   preparer
+  synchroniser
   statique_systeme
   statique_informix
+  synchroniser
   boucle_supervision
 }
 
@@ -443,18 +644,37 @@ cmd_supervision() {
   if [ -f "$SORTIE/supervision.pid" ] && kill -0 "$(cat "$SORTIE/supervision.pid")" 2>/dev/null; then
     echo "Une supervision est déjà en cours (pid $(cat "$SORTIE/supervision.pid"))." >&2; exit 1
   fi
+  if [ -n "$CAMPAGNE" ]; then
+    touch "$(camp_dir)/.test_$HOTE" 2>/dev/null && rm -f "$(camp_dir)/.test_$HOTE" \
+      || { echo "Écriture impossible dans $(camp_dir) depuis $HOTE (partage monté ? « no_root_squash » ?)." >&2; exit 1; }
+  fi
   [ -n "$DEBUT" ] && echo "Démarrage programmé à $DEBUT."
+  local a=(--duree "$DUREE" --intervalle "$INTERVALLE" --sortie "$SORTIE" --partage "$PARTAGE" --motifs "$MOTIFS" --role "$ROLE"
+           --table-programmes "$PROG_TABLE")
+  [ -n "$DEBUT" ] && a+=(--debut "$DEBUT"); [ -n "$BDD_HOTE" ] && a+=(--bdd-hote "$BDD_HOTE"); [ -n "$BDD_PORT" ] && a+=(--bdd-port "$BDD_PORT")
+  [ -n "$CAMPAGNE" ] && a+=(--campagne "$CAMPAGNE"); [ "$AVEC_SQL" -eq 0 ] && a+=(--sans-sql); [ "$RAPPORT" -eq 0 ] && a+=(--sans-rapport)
+  [ -n "$INFORMIXDIR_OPT" ] && a+=(--informixdir "$INFORMIXDIR_OPT"); [ -n "$INFORMIXSERVER_OPT" ] && a+=(--informixserver "$INFORMIXSERVER_OPT")
+  [ -n "$ONCONFIG_OPT" ] && a+=(--onconfig "$ONCONFIG_OPT")
   # nouvelle session (setsid) : la supervision continue après la fermeture de la connexion SSH
-  setsid nohup bash "$(readlink -f "$0")" _executer "${ARGS_ORIG[@]}" </dev/null >/dev/null 2>&1 &
+  setsid nohup bash "$SCRIPT" _executer "${a[@]}" </dev/null >/dev/null 2>&1 &
   sleep 2
-  echo "Supervision lancée en arrière-plan (pid $(cat "$SORTIE/supervision.pid" 2>/dev/null)), durée $DUREE, intervalle $INTERVALLE s."
-  echo "Suivi : $0 statut   ·   signaler une lenteur : $0 marquer \"description\"   ·   arrêt anticipé : $0 arreter"
+  echo "Supervision lancée en arrière-plan sur $HOTE (pid $(cat "$SORTIE/supervision.pid" 2>/dev/null)), durée $DUREE, intervalle $INTERVALLE s${CAMPAGNE:+, campagne $CAMPAGNE}."
+  [ -z "$CAMPAGNE" ] && echo "Suivi : $0 statut   ·   signaler une lenteur : $0 marquer \"description\"   ·   arrêt anticipé : $0 arreter"
+  return 0
 }
 
 cmd_marquer() {
-  local texte="${*:-lenteur signalée}"
-  [ -d "$EN_COURS_LIEN" ] || { echo "Aucune supervision en cours sur ce serveur." >&2; exit 1; }
-  echo "$(date +%s)|$(date '+%F %T')|${SUDO_USER:-${USER:-$(id -un)}}|$texte" >> "$EN_COURS_LIEN/marqueurs.txt"
+  local texte="${*:-lenteur signalée}" ligne
+  ligne="$(date +%s)|$(date '+%F %T')|${SUDO_USER:-${USER:-$(id -un)}}@$HOTE|${texte//|//}"
+  # campagne : signalement central (partage), quel que soit le serveur où la commande est tapée
+  [ -z "$CAMPAGNE" ] && [ -f "$EN_COURS_LIEN/info.txt" ] && CAMPAGNE="$(awk -F= '$1=="campagne"{print $2}' "$EN_COURS_LIEN/info.txt")"
+  [ -z "$CAMPAGNE" ] && [ ! -d "$EN_COURS_LIEN" ] && CAMPAGNE="$(derniere_campagne)"
+  if [ -n "$CAMPAGNE" ] && [ -d "$(camp_dir)" ]; then
+    echo "$ligne" >> "$(camp_dir)/marqueurs.txt" || exit 1
+  else
+    [ -d "$EN_COURS_LIEN" ] || { echo "Aucune supervision ni campagne en cours." >&2; exit 1; }
+    echo "$ligne" >> "$EN_COURS_LIEN/marqueurs.txt"
+  fi
   echo "Signalement enregistré à $(date '+%H:%M:%S') : $texte"
 }
 
@@ -477,23 +697,30 @@ cmd_arreter() {
 
 # ---------------------------------------------------------------------------------------------
 ACTION="${1:-}"; shift || true
-ARGS_ORIG=("$@")
+RESTE=()
+analyser_options() {
 while [ $# -gt 0 ]; do
   case "$1" in
+    --partage) PARTAGE="$(readlink -f "$2")"; shift 2;; --campagne) CAMPAGNE="$2"; shift 2;; --serveurs) SERVEURS="${2//,/ }"; shift 2;;
+    --table-programmes) PROG_TABLE="$2"; shift 2;;
     --duree) DUREE="$2"; shift 2;; --intervalle) INTERVALLE="$2"; shift 2;; --debut) DEBUT="$2"; shift 2;;
     --sortie) SORTIE="$2"; EN_COURS_LIEN="$SORTIE/en-cours"; shift 2;;
     --bdd-hote) BDD_HOTE="$2"; shift 2;; --bdd-port) BDD_PORT="$2"; shift 2;; --motifs) MOTIFS="$2"; shift 2;;
     --role) ROLE="$2"; shift 2;; --sans-sql) AVEC_SQL=0; shift;; --sans-rapport) RAPPORT=0; shift;;
     --informixdir) INFORMIXDIR_OPT="$2"; shift 2;; --informixserver) INFORMIXSERVER_OPT="$2"; shift 2;; --onconfig) ONCONFIG_OPT="$2"; shift 2;;
-    *) [ "$ACTION" = marquer ] && break; echo "Option inconnue : $1" >&2; exit 1;;
+    --*) echo "Option inconnue : $1" >&2; exit 1;;
+    *) RESTE+=("$1"); shift;;
   esac
 done
+}
+if [ "$ACTION" = campagne ]; then cmd_campagne "$@"; exit $?; fi
+analyser_options "$@"
 case "$ACTION" in
   instantane) cmd_instantane ;;
   supervision) cmd_supervision ;;
-  marquer) cmd_marquer "$@" ;;
+  marquer) cmd_marquer "${RESTE[@]:-}" ;;
   statut) cmd_statut ;;
   arreter) cmd_arreter ;;
   _executer) executer_supervision ;;  # interne
-  *) sed -n '3,24p' "$0"; exit 1 ;;
+  *) sed -n '3,31p' "$0"; exit 1 ;;
 esac
