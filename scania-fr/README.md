@@ -23,7 +23,7 @@ Les recommandations sont **calculées à partir des mesures** de la campagne et 
 | serveurs d'applications IRIUM / Genero (fglrun) | Applications : la latence vers la base est mesurée |
 | serveur ipscrond | Tâches d'arrière-plan |
 
-L'environnement Informix est lu dans le profil du compte `informix` (`ONCONFIG=onconfig.ol_x0296se`, `INFORMIXSQLHOSTS=…/sqlhosts.ol_x0296se`). Le journal du moteur `$INFORMIXDIR/tmp/online.log` est au format daté (`MSG_DATE 1`). Une lecture préliminaire de l'ONCONFIG figure dans [docs/analyse-configuration-x0296se.md](docs/analyse-configuration-x0296se.md) : elle donne des hypothèses, que la campagne confirme ou écarte.
+La base IRIUM analysée est **`magix_prod`** : profils par objet, statistiques, index et journal des programmes `agr_lds`. Elle peut être changée avec `--base`, et si elle est absente, toutes les bases utilisateur sont analysées. L'environnement Informix est lu dans le profil du compte `informix` (`ONCONFIG=onconfig.ol_x0296se`, `INFORMIXSQLHOSTS=…/sqlhosts.ol_x0296se`). Le journal du moteur `$INFORMIXDIR/tmp/online.log` est au format daté (`MSG_DATE 1`). Une lecture préliminaire de l'ONCONFIG figure dans [docs/analyse-configuration-x0296se.md](docs/analyse-configuration-x0296se.md) : elle donne des hypothèses, que la campagne confirme ou écarte.
 
 ## Ce qui est collecté
 
