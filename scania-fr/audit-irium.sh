@@ -24,7 +24,8 @@
 #   ./audit-irium.sh statut | arreter
 #
 # Options communes : [--partage DIR] (défaut : dossier du script)
-#   [--sortie DIR] (défaut : <dossier du script>/resultats/<serveur>, ou /var/tmp/scania-fr si non accessible ; en campagne : /var/tmp)
+#   [--sortie DIR] (défaut : <dossier du script>/resultats/<serveur> ; en campagne, données dans <dossier du script>/campagnes/<nom>/<serveur>)
+#   Tout est écrit dans le dossier du script (ex. /msdos/ks/scania-fr) : rien dans /var ni /tmp.
 #   [--base magix_prod]  [--motifs 'ipscrond|fglrun|...']  [--services 'digital_dealer|autre_service']  [--table-programmes agr_lds]  [--sans-sql]  [--sans-rapport]
 #   [--informixdir DIR --informixserver NOM --onconfig FICHIER]
 #   [--trace-sql]  trace SQL du moteur (sysadmin task) pendant l'audit sur la base principale, coupée à la fin :
@@ -35,7 +36,7 @@
 set -uo pipefail
 export LC_ALL=C LANG=C
 
-SORTIE=""   # défaut : <dossier du script>/resultats/<serveur>, sinon /var/tmp/scania-fr
+SORTIE=""   # défaut : <dossier du script>/resultats/<serveur>
 DUREE=4h
 INTERVALLE=30
 DEBUT=""
@@ -57,7 +58,7 @@ HOTE="${AUDIT_HOTE:-$(hostname -s 2>/dev/null || hostname)}"   # AUDIT_HOTE : te
 EN_COURS_LIEN=""
 
 # ---------------------------------------------------------------------------------------------
-journal() { echo "$(date '+%F %T') $*" | tee -a "${DOSSIER:-/tmp}/journal.txt" >&2; }
+journal() { if [ -n "${DOSSIER:-}" ]; then echo "$(date '+%F %T') $*" | tee -a "$DOSSIER/journal.txt" >&2; else echo "$(date '+%F %T') $*" >&2; fi; }
 horodatage() { echo "### $(date +%s) $(date '+%F %T')"; }
 # exécute une commande avec délai maximal et l'ajoute horodatée à un fichier brut
 brut() { local f="$1"; shift; { horodatage; timeout 60 "$@" 2>&1; echo; } >> "$f"; }
@@ -485,9 +486,12 @@ profils_objets() {
 # ---------------------------------------------------------------------------------------------
 preparer() {
   [ "$(id -u)" -eq 0 ] || { echo "À lancer en root." >&2; exit 1; }
+  verifier_stockage
   charger_informix
   detecter_role
-  DOSSIER="$SORTIE/${HOTE}_$(date +%Y%m%d_%H%M)"
+  if [ -n "$CAMPAGNE" ]; then DOSSIER="$(camp_dir)/$HOTE"   # campagne : écriture directe dans le dossier de la campagne
+  else DOSSIER="$SORTIE/${HOTE}_$(date +%Y%m%d_%H%M)"; fi
+  [ -e "$DOSSIER/info.txt" ] && [ -n "$CAMPAGNE" ] && mv "$DOSSIER" "$(camp_dir)/.${HOTE}_avant_$(date +%H%M%S)"   # campagne relancée sur ce serveur (ancien relevé mis de côté)
   mkdir -p "$DOSSIER/series" "$DOSSIER/informix" "$DOSSIER/statique"
   {
     echo "serveur=$HOTE"; echo "roles=$ROLE_TXT"; echo "informix=$IFX"
@@ -513,8 +517,9 @@ terminer() {
   else
     generer_rapport
   fi
-  tar -C "$SORTIE" -czf "$DOSSIER.tar.gz" "$(basename "$DOSSIER")" 2>/dev/null
-  journal "Terminé. Données : $DOSSIER - Archive : $DOSSIER.tar.gz"
+  local arch="$SORTIE/$(basename "$DOSSIER")${CAMPAGNE:+_$CAMPAGNE}.tar.gz"
+  tar -C "$(dirname "$DOSSIER")" -czf "$arch" "$(basename "$DOSSIER")" 2>/dev/null
+  journal "Terminé. Données : $DOSSIER - Archive : $arch"
 }
 
 # Services systemd (actifs, en échec) et ports en écoute : au début et à la fin de l'audit
@@ -617,13 +622,11 @@ lire_conf_campagne() {   # charge campagne.conf (clé=valeur, sans exécution)
 # Copie du dossier local vers le partage (le travail reste local : un partage lent ou figé ne bloque pas la collecte)
 synchroniser() {
   [ -n "$CAMPAGNE" ] || return 0
-  local dest; dest="$(camp_dir)/$HOTE"
-  timeout 120 mkdir -p "$dest" 2>/dev/null
-  if existe rsync; then timeout 300 rsync -a "$DOSSIER/" "$dest/" 2>/dev/null; else timeout 300 cp -ru "$DOSSIER/." "$dest/" 2>/dev/null; fi
+  # les données sont écrites directement dans le dossier de la campagne : seul l'état d'avancement est mis à jour
   { echo "etat=${1:-en_cours}"; echo "maj=$(date +%s)"; echo "roles=$ROLE_TXT"; echo "intervalle=$INTERVALLE"
     echo "echantillons=$(grep -c '^###' "$DOSSIER/series/stat.raw" 2>/dev/null || echo 0)"; echo "dossier_local=$DOSSIER"; } \
     > "$(camp_dir)/.$HOTE.etat.tmp" 2>/dev/null && mv -f "$(camp_dir)/.$HOTE.etat.tmp" "$(camp_dir)/$HOTE.etat" 2>/dev/null \
-    || journal "Partage $(camp_dir) inaccessible : données conservées localement ($DOSSIER)"
+    || journal "Dossier $(camp_dir) inaccessible en écriture"
 }
 
 arret_campagne_demande() { [ -n "$CAMPAGNE" ] && timeout 10 test -e "$(camp_dir)/ARRET"; }
@@ -803,6 +806,7 @@ executer_supervision() {   # processus détaché (lancé par cmd_supervision)
 
 cmd_supervision() {
   [ "$(id -u)" -eq 0 ] || { echo "À lancer en root." >&2; exit 1; }
+  verifier_stockage
   [ "$INTERVALLE" -ge 10 ] || INTERVALLE=10
   mkdir -p "$SORTIE"
   if [ -f "$SORTIE/supervision.pid" ] && kill -0 "$(cat "$SORTIE/supervision.pid")" 2>/dev/null; then
@@ -877,22 +881,17 @@ while [ $# -gt 0 ]; do
   esac
 done
 }
-# Dossier de travail : sur le partage à côté du script (un sous-dossier par serveur), sinon /var/tmp si non accessible.
-# En campagne, la collecte reste locale (/var/tmp) et est copiée sur le partage toutes les 5 minutes.
+# Dossier de travail : toujours dans le dossier du script (ex. /msdos/ks/scania-fr/resultats/<serveur>), jamais /var ni /tmp
 resoudre_sortie() {
-  if [ -z "$SORTIE" ]; then
-    local c="$PARTAGE/resultats/$HOTE"
-    if [ -z "$CAMPAGNE" ] && [ "$ACTION" != campagne ] && mkdir -p "$c" 2>/dev/null && touch "$c/.test" 2>/dev/null; then
-      rm -f "$c/.test"; SORTIE="$c"
-    else
-      SORTIE=/var/tmp/scania-fr
-    fi
-  fi
-  # statut / arreter / marquer : retrouver une supervision lancée par une campagne (travail dans /var/tmp)
-  if [[ "$ACTION" =~ ^(statut|arreter|marquer)$ ]] && [ ! -f "$SORTIE/supervision.pid" ] && [ -f /var/tmp/scania-fr/supervision.pid ]; then
-    SORTIE=/var/tmp/scania-fr
-  fi
+  [ -n "$SORTIE" ] || SORTIE="$PARTAGE/resultats/$HOTE"
   EN_COURS_LIEN="$SORTIE/en-cours"
+}
+
+# Vérifie que le dossier de stockage est accessible en écriture avant toute collecte
+verifier_stockage() {
+  mkdir -p "$SORTIE" 2>/dev/null && touch "$SORTIE/.test_ecriture" 2>/dev/null && rm -f "$SORTIE/.test_ecriture" && return 0
+  echo "Écriture impossible dans $SORTIE (partage non monté, lecture seule ou « root_squash » ?). Aucune donnée n'est écrite ailleurs." >&2
+  exit 1
 }
 if [ "$ACTION" = campagne ]; then cmd_campagne "$@"; exit $?; fi
 analyser_options "$@"

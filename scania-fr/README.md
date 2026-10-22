@@ -69,7 +69,7 @@ La base IRIUM analysée est **`magix_prod`** : profils par objet, statistiques, 
 1. **Déposer** `audit-irium.sh` et `rapport_audit.py` dans un dossier **partagé** (NFS) monté **au même chemin** sur tous les serveurs, par exemple `/partage/audit-scania/`. Puis `chmod +x audit-irium.sh`.
 2. Le compte **root** doit pouvoir écrire dans ce dossier : export NFS en `no_root_squash`, ou dossier en `777` dédié à l'audit. La commande `campagne demarrer` vérifie l'écriture, et refuse de démarrer sinon.
    - Éviter, si possible, un partage hébergé par le serveur de base.
-   - De toute façon, chaque serveur collecte **en local** (`/var/tmp/scania-fr`) et copie ses données sur le partage toutes les 5 minutes. Un partage lent ou indisponible ne bloque donc jamais la collecte.
+   - Chaque serveur écrit ses données **directement sur le partage**, dans `campagnes/<nom>/<serveur>/`.
 3. **Vérifier l'heure** sur tous les serveurs (`chronyc tracking`) : le rapport aligne les serveurs sur l'heure.
 4. **Facultatif** : une clé SSH root depuis le serveur de lancement vers les autres permet de tout démarrer avec une seule commande. Sans SSH, lancer `campagne rejoindre` sur chaque serveur.
 5. **Test rapide** : `./audit-irium.sh instantane` sur un serveur (2 minutes).
@@ -111,24 +111,26 @@ Contenu du partage :
   audit-irium.sh  rapport_audit.py
   campagnes/<nom>/
     campagne.conf            paramètres de la campagne
-    <serveur>/               données de chaque serveur (synchronisées toutes les 5 min)
+    <serveur>/               données de chaque serveur (écrites en direct)
     <serveur>.etat           avancement
     marqueurs.txt            signalements des utilisateurs
     rapport_<nom>.html       RAPPORT CENTRAL
     rapport_<nom>_inventaire/  plan d'actions et classements (CSV)
 ```
-Une archive `.tar.gz` de chaque serveur est aussi conservée localement dans `/var/tmp/scania-fr`. **Volume** : 5 à 20 Mo par serveur pour une matinée.
+Une archive `.tar.gz` de chaque serveur est aussi créée dans `resultats/<serveur>/`. **Volume** : 5 à 20 Mo par serveur pour une matinée.
 
 ### Où sont les résultats, et protection du disque
 
-- **Mode autonome** (`instantane`, `supervision`) : `<dossier du script>/resultats/<serveur>/`, par exemple `/msdos/ks/scania-fr/resultats/x0296se/`, avec le rapport HTML et l'archive. Si ce dossier n'est pas accessible en écriture, le script utilise `/var/tmp/scania-fr`. `--sortie DIR` impose un autre dossier.
-- **Les rapports sont copiés directement dans le dossier du script** (`/msdos/ks/scania-fr/`) :
-  - `rapport_<serveur>_<date>.html` après un audit autonome ;
-  - `rapport_<campagne>.html` après une campagne ;
-  - `rapport_audit_irium_<date>.html` pour `rapport_audit.py` lancé à la main sans `-o`.
+**Tout est écrit dans le dossier du script**, par exemple `/msdos/ks/scania-fr`. Rien ne va dans `/var` ni dans `/tmp`.
 
-  Chaque rapport est accompagné de son dossier `_inventaire` (CSV).
-- **Campagne** : collecte locale dans `/var/tmp/scania-fr`, copiée toutes les 5 minutes dans `<partage>/campagnes/<nom>/<serveur>/`.
+| Quoi | Où |
+|---|---|
+| Audit autonome (`instantane`, `supervision`) | `resultats/<serveur>/<serveur>_<date>/` et son archive `.tar.gz` |
+| Campagne | `campagnes/<nom>/<serveur>/` (écriture directe) ; archive dans `resultats/<serveur>/<serveur>_<nom>.tar.gz` |
+| Rapports | `rapport_<serveur>_<date>.html`, `rapport_<campagne>.html` ou `rapport_audit_irium_<date>.html`, chacun avec son dossier `_inventaire` (CSV) |
+| Fichiers temporaires du rapport | à côté du rapport, supprimés à la fin |
+
+- Si le dossier n'est pas accessible en écriture (partage non monté, lecture seule, `root_squash`), le script **s'arrête avec un message** au lieu d'écrire ailleurs. `--sortie DIR` impose un autre dossier.
 - **Protection** : la collecte s'arrête proprement, avec un message dans le journal, s'il reste moins de **1 Go** ou si le disque est plein à plus de **95 %**. Un audit complet d'une matinée fait 5 à 20 Mo par serveur.
 - `onstat -g spi` est relevé seulement au début et à la fin, et agrégé à la volée. Sur un gros BUFFERPOOL, il liste un mutex par buffer, soit des millions de lignes.
 
