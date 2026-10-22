@@ -311,7 +311,9 @@ def serie_profil(d):
                         'dltouts': dl('dltouts'), 'ckpwaits': dl('ckpwaits'), 'seqscans_min': dl('seqscans') * 60 / el,
                         'bufwaits_min': dl('bufwaits') * 60 / el, 'ovlock': dl('ovlock'), 'ovbuff': dl('ovbuff'),
                         'ovuserthread': dl('ovuserthread'), 'lchwaits_min': dl('lchwaits') * 60 / el,
-                        'bufwaits_ratio': 100.0 * dl('bufwaits') / (dl('pagreads') + br) if (dl('pagreads') + br) > 0 else None})
+                        'bufwaits_ratio': 100.0 * dl('bufwaits') / (dl('pagreads') + br) if (dl('pagreads') + br) > 0 else None,
+                        'ra_eff': 100.0 * dl('RA-pgsused') / (dl('ixda-RA') + dl('idx-RA') + dl('da-RA'))
+                        if (dl('ixda-RA') + dl('idx-RA') + dl('da-RA')) > 0 else None})
         prec = (ts, p)
     return res
 
@@ -600,7 +602,10 @@ def date_sql(v, dmy=True):
 
 def inventaire(d):
     inv = os.path.join(d, 'informix', 'inventaire')
-    r = {'dbspaces': [], 'tailles': {}, 'stats': {}, 'index': {}, 'noms': {}}
+    r = {'dbspaces': [], 'tailles': {}, 'stats': {}, 'index': {}, 'noms': {}, 'index_detail': {}, 'bases': {}}
+    for x in lignes_unl(lire(os.path.join(inv, 'bases.unl'))):
+        if len(x) >= 3:
+            r['bases'][x[0]] = {'journalisee': x[1] == '1', 'log_bufferise': x[2] == '1', 'ansi': len(x) > 3 and x[3] == '1'}
     for x in lignes_unl(lire(os.path.join(inv, 'dbspaces.unl'))):
         if len(x) >= 5 and entier(x[3]):
             tot, libre = entier(x[3]), entier(x[4]) or 0
@@ -624,10 +629,13 @@ def inventaire(d):
             if len(x) >= 4:
                 dates = [v for v in (date_sql(x[3], dmy), distrib.get(x[0])) if v]
                 r['stats'][(base, x[0])] = {'nrows': entier(x[1]), 'npused': entier(x[2]), 'stats': max(dates) if dates else None,
-                                            'distrib': distrib.get(x[0])}
+                                            'distrib': distrib.get(x[0]), 'verrou': x[4] if len(x) > 4 else '', 'taille_ligne': entier(x[5]) if len(x) > 5 else None}
         for x in lignes_unl(lire(os.path.join(inv, 'index_%s.unl' % base))):
             if len(x) >= 2:
                 r['index'][(base, x[0])] = x[1]
+            if len(x) >= 15:
+                r['index_detail'][(base, x[0])] = {'table': x[1], 'type': x[2], 'cluster': x[3], 'niveaux': entier(x[4]), 'feuilles': entier(x[5]),
+                                                   'uniques': entier(x[6]), 'colonnes': [int(entier(c) or 0) for c in x[7:15] if (entier(c) or 0) != 0]}
     return r
 
 
@@ -1207,6 +1215,498 @@ def section_services(s, t0, t1, marq):
 
 
 # --------------------------------------------------------------------------------------------
+# Informix expert : vitesse des chunks, files d'I/O, mutex, buffers, logs, blocages, mémoire,
+# dbspaces temporaires, configuration modifiée à chaud, santé des tables et index, trace SQL
+# --------------------------------------------------------------------------------------------
+def iof_blocs(t):
+    res, cour = {}, None
+    for l in t.splitlines():
+        p = l.split()
+        if len(p) >= 6 and p[0].isdigit() and '/' in p[1]:
+            cour = res[p[1]] = {'oct_l': entier(p[2]) or 0, 'oct_e': entier(p[4]) or 0, 'nl': 0, 'ne': 0, 'tl': 0.0, 'te': 0.0}
+        elif cour is not None and len(p) >= 3 and p[0] in ('reads', 'writes') and p[1].isdigit():
+            n, ms = int(p[1]), (num(p[2]) or 0) * 1000
+            if p[0] == 'reads':
+                cour['nl'], cour['tl'] = n, n * ms
+            else:
+                cour['ne'], cour['te'] = n, n * ms
+    return res
+
+
+def vitesse_chunks(d):
+    """Débit, IOPS et temps de réponse par chunk, par intervalle (deltas de onstat -g iof)."""
+    b = [(ts, iof_blocs(t)) for ts, t in blocs(os.path.join(d, 'informix', 'onstat_iof.raw'))]
+    b = [x for x in b if x[1]]
+    res = {}
+    for (t0, a), (t1, z) in zip(b, b[1:]):
+        el = (t1 - t0).total_seconds() or 1
+        for ch, v in z.items():
+            u = a.get(ch)
+            if not u or v['nl'] < u['nl'] or v['ne'] < u['ne']:
+                continue
+            dnl, dne = v['nl'] - u['nl'], v['ne'] - u['ne']
+            res.setdefault(ch, []).append({'ts': t1, 'lect_mo_s': (v['oct_l'] - u['oct_l']) / 1048576.0 / el, 'ecr_mo_s': (v['oct_e'] - u['oct_e']) / 1048576.0 / el,
+                                           'iops': (dnl + dne) / el, 'lect_ms': (v['tl'] - u['tl']) / dnl if dnl else None,
+                                           'ecr_ms': (v['te'] - u['te']) / dne if dne else None})
+    return res
+
+
+def files_io(d):
+    res = []
+    for ts, t in blocs(os.path.join(d, 'informix', 'onstat_ioq.raw')):
+        q = {}
+        for l in t.splitlines():
+            p = l.split()
+            if len(p) >= 8 and p[1].isdigit() and all(entier(x) is not None for x in p[2:8]) and p[0].isalpha():
+                q['%s %s' % (p[0], p[1])] = {'len': int(entier(p[2])), 'maxlen': int(entier(p[3])), 'ops': entier(p[4])}
+        if q:
+            res.append({'ts': ts, 'files': q, 'len_max': max(v['len'] for v in q.values()), 'len_tot': sum(v['len'] for v in q.values())})
+    return res
+
+
+INDICES_MUTEX = [(r'lock', 'table des verrous (nombreux verrous posés : isolation, verrouillage par page, transactions longues)'),
+                 (r'lru|bf|bhash|buff', 'pool de buffers (pages très sollicitées, nombre de LRU)'),
+                 (r'log|plog|llog', 'buffers de log (validations très fréquentes, LOGBUFF / PHYSBUFF)'),
+                 (r'ddh|dict|dd_', 'cache du dictionnaire (DD_HASHSIZE)'), (r'stmt|ssc', 'cache des instructions SQL (STMT_CACHE)'),
+                 (r'mem|mpool|shm', 'allocation mémoire partagée (sessions nombreuses / SHMADD)')]
+
+
+def contention_mutex(d):
+    b = blocs(os.path.join(d, 'informix', 'onstat_spi.raw'))
+    lire_spi = lambda t: dict(_spi_lignes(t))
+    if len(b) < 2:
+        return None
+    a, z = lire_spi(b[0][1]), lire_spi(b[-1][1])
+    mn = ((b[-1][0] - b[0][0]).total_seconds() or 60) / 60.0
+    res = []
+    for nom, (w, lp) in z.items():
+        w0, l0 = a.get(nom, (0, 0))
+        if w >= w0 and w - w0 > 0:
+            indice = next((txt for m, txt in INDICES_MUTEX if re.search(m, nom, re.I)), '')
+            res.append({'nom': nom, 'attentes_min': (w - w0) / mn, 'boucles_par_attente': (lp - l0) / float(w - w0) if w - w0 else 0, 'indice': indice})
+    return sorted(res, key=lambda x: -x['attentes_min'])[:15]
+
+
+def _spi_lignes(t):
+    agg = {}
+    for l in t.splitlines():
+        m = re.match(r'^\s*(\d+)\s+(\d+)\s+[\d.]+\s+(.+?)\s*$', l)
+        if m:
+            nom = re.sub(r'\[\d+\]', '', m.group(3)).strip()
+            w, lp = agg.get(nom, (0, 0))
+            agg[nom] = (w + int(m.group(1)), lp + int(m.group(2)))
+    return agg.items()
+
+
+def pool_buffers(d):
+    def lire_buf(t):
+        res, taille = {}, None
+        lignes = t.splitlines()
+        for i, l in enumerate(lignes):
+            m = re.search(r'page size:\s*(\d+)', l)
+            if m:
+                taille = m.group(1)
+            if 'Fg Writes' in l and i + 1 < len(lignes) and taille:
+                v = lignes[i + 1].split()
+                if len(v) >= 4:
+                    res[taille] = {'fg': entier(v[0]) or 0, 'lru': entier(v[1]) or 0, 'chunk': entier(v[3]) or 0}
+        return res
+    b = [(ts, lire_buf(t)) for ts, t in blocs(os.path.join(d, 'informix', 'onstat_buf.raw'))]
+    b = [x for x in b if x[1]]
+    if len(b) < 2:
+        return {}
+    res = {}
+    for k, z in b[-1][1].items():
+        a = b[0][1].get(k)
+        if a and z['lru'] >= a['lru']:
+            tot = (z['fg'] - a['fg']) + (z['lru'] - a['lru']) + (z['chunk'] - a['chunk'])
+            res[k] = dict(('d_' + x, z[x] - a[x]) for x in ('fg', 'lru', 'chunk'))
+            res[k]['part_chunk'] = 100.0 * (z['chunk'] - a['chunk']) / tot if tot else None
+    return res
+
+
+def buffers_log(d):
+    """Efficacité des buffers de log (pages par écriture) et remplissage du log physique, d'après onstat -l."""
+    serie = []
+    for ts, t in blocs(os.path.join(d, 'informix', 'onstat_l.raw')):
+        e = {'ts': ts}
+        lignes = t.splitlines()
+        for i, l in enumerate(lignes):
+            p = l.split()
+            if len(p) >= 8 and p[0].startswith('L-'):
+                e['l_pages'], e['l_ecr'] = entier(p[4]), entier(p[5])
+            elif len(p) >= 6 and p[0].startswith('P-'):
+                e['p_pages'], e['p_ecr'] = entier(p[3]), entier(p[4])
+            elif 'phybegin' in l and i + 1 < len(lignes):
+                v = lignes[i + 1].split()
+                if v and num(v[-1]) is not None:
+                    e['phys_pct'] = num(v[-1])
+        if len(e) > 1:
+            serie.append(e)
+    res = {'serie': serie}
+    avec = [e for e in serie if e.get('l_ecr') is not None]
+    if len(avec) >= 2 and avec[-1]['l_ecr'] > avec[0]['l_ecr']:
+        res['l_pages_par_io'] = (avec[-1]['l_pages'] - avec[0]['l_pages']) / float(avec[-1]['l_ecr'] - avec[0]['l_ecr'])
+    avec = [e for e in serie if e.get('p_ecr') is not None]
+    if len(avec) >= 2 and avec[-1]['p_ecr'] > avec[0]['p_ecr']:
+        res['p_pages_par_io'] = (avec[-1]['p_pages'] - avec[0]['p_pages']) / float(avec[-1]['p_ecr'] - avec[0]['p_ecr'])
+    res['phys_max'] = stats([e.get('phys_pct') for e in serie])['max']
+    return res
+
+
+def chaines_blocage(d):
+    """Sessions qui bloquent les autres (sysmaster:syslocks, relevé quand ≥ 2 sessions attendent un verrou)."""
+    b = [(ts, lignes_unl(t)) for ts, t in blocs(os.path.join(d, 'informix', 'verrous_attente.raw'))]
+    b = [x for x in b if x[1]]
+    tenants, tables = {}, {}
+    for ts, rows in b:
+        vus = set()
+        for x in rows:
+            if len(x) < 10:
+                continue
+            cle = (x[3], x[4], x[5], x[6])
+            a = tenants.setdefault(cle, {'sid': x[3], 'utilisateur': x[4], 'poste': x[5], 'pid': x[6], 'attentes': 0, 'releves': set(), 'tables': {}, 'bloques': set(),
+                                         'premier': ts, 'dernier': ts})
+            a['attentes'] += 1
+            a['releves'].add(ts)
+            a['dernier'] = ts
+            a['tables']['%s:%s' % (x[0], x[1])] = a['tables'].get('%s:%s' % (x[0], x[1]), 0) + 1
+            a['bloques'].add('%s@%s' % (x[8] or '?', x[9] or '?'))
+            if (x[0], x[1], ts) not in vus:
+                vus.add((x[0], x[1], ts))
+                tables[(x[0], x[1])] = tables.get((x[0], x[1]), 0) + 1
+    return {'releves': len(b), 'tenants': sorted(tenants.values(), key=lambda a: -a['attentes']), 'tables': sorted(tables.items(), key=lambda kv: -kv[1])}
+
+
+def memoire_sessions(d):
+    b = blocs(os.path.join(d, 'informix', 'memoire_sessions.raw'))
+    res = {}
+    for _ts, t in b:
+        for x in lignes_unl(t):
+            if len(x) >= 6 and (entier(x[4]) or 0) > (res.get(x[0], {}).get('mo', 0) * 1048576):
+                res[x[0]] = {'sid': x[0], 'utilisateur': x[1], 'poste': x[2], 'pid': x[3], 'mo': (entier(x[4]) or 0) / 1048576.0}
+    return sorted(res.values(), key=lambda e: -e['mo'])[:15]
+
+
+def temp_dbspaces(d, temp_noms):
+    """Occupation des dbspaces temporaires au fil de l'audit (onstat -d toutes les 15 min)."""
+    serie = []
+    for ts, t in blocs(os.path.join(d, 'informix', 'onstat_d.raw')):
+        noms, occ = {}, {}
+        for l in t.splitlines():
+            p = l.split()
+            if len(p) >= 9 and re.match(r'^[0-9a-f]{6,}$', p[0]) and p[1].isdigit() and p[3].isdigit() and not '/' in l:
+                noms[p[1]] = p[-1]
+            elif len(p) >= 7 and re.match(r'^[0-9a-f]{6,}$', p[0]) and p[-1].startswith('/'):
+                dbs = p[2]
+                taille, libre = entier(p[4]), entier(p[5])
+                if taille:
+                    a = occ.setdefault(dbs, [0, 0])
+                    a[0] += taille
+                    a[1] += libre or 0
+        e = {'ts': ts}
+        for n, (tot, lib) in occ.items():
+            nom = noms.get(n, n)
+            if nom in temp_noms:
+                e[nom] = 100.0 * (tot - lib) / tot
+        if len(e) > 1:
+            serie.append(e)
+    return serie
+
+
+def config_a_chaud(d, cf):
+    """Paramètres numériques dont la valeur en mémoire (onstat -g cfg) diffère du fichier ONCONFIG."""
+    res = []
+    for l in lire(os.path.join(d, 'statique', 'informix', 'onstat__g_cfg.txt')).splitlines():
+        m = re.match(r'^\s*([A-Z][A-Z0-9_]{2,})\s+(-?\d+)\s*$', l)
+        if m and isinstance(cf.get(m.group(1)), str) and re.match(r'^-?\d+$', cf[m.group(1)].strip()):
+            if int(cf[m.group(1)].strip()) != int(m.group(2)):
+                res.append((m.group(1), cf[m.group(1)].strip(), m.group(2)))
+    return res
+
+
+def requetes_sql(d):
+    """Trace SQL (option --trace-sql) : requêtes regroupées par forme normalisée (littéraux remplacés par ?)."""
+    cols = [x[0] for x in lignes_unl(lire(os.path.join(d, 'informix', 'trace_sql_colonnes.unl'))) if x]
+    b = blocs(os.path.join(d, 'informix', 'trace_sql.raw'))
+    if not cols or not b:
+        return None
+    i = dict((c, n) for n, c in enumerate(cols))
+    if 'sql_statement' not in i:
+        return None
+    vus, groupes = set(), {}
+    for _ts, t in b:
+        for x in lignes_unl(t):
+            if len(x) < len(cols):
+                continue
+            cle = x[i['sql_id']] if 'sql_id' in i else tuple(x)
+            if cle in vus:
+                continue
+            vus.add(cle)
+            v = lambda c: entier(x[i[c]]) if c in i else None
+            txt = x[i['sql_statement']]
+            norme = re.sub(r'\s+', ' ', re.sub(r'\b\d+(\.\d+)?\b', '?', re.sub(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"", '?', txt))).strip()
+            g = groupes.setdefault(norme[:400], {'texte': norme[:400], 'exemple': txt[:600], 'exec': 0, 'duree': 0.0, 'pgreads': 0, 'bfreads': 0, 'lockwaits': 0,
+                                                 'tris_disque': 0, 'lignes': 0, 'sessions': set(), 'isolation': set(), 'base': x[i['sql_database']] if 'sql_database' in i else ''})
+            g['exec'] += 1
+            g['duree'] += v('sql_runtime') or 0
+            g['pgreads'] += v('sql_pgreads') or 0
+            g['bfreads'] += v('sql_bfreads') or 0
+            g['lockwaits'] += v('sql_lockwaits') or 0
+            g['tris_disque'] += v('sql_sortdisk') or 0
+            g['lignes'] += v('sql_actualrows') or 0
+            if 'sql_sid' in i:
+                g['sessions'].add(x[i['sql_sid']])
+            if 'sql_isollevel' in i:
+                g['isolation'].add(x[i['sql_isollevel']])
+    L = list(groupes.values())
+    return {'groupes': L, 'nb': len(vus), 'total': dict((k, sum(g[k] for g in L)) for k in ('duree', 'pgreads', 'bfreads', 'lockwaits', 'exec'))}
+
+
+ISOLATION = {'0': 'sans transaction', '1': 'DIRTY READ', '2': 'COMMITTED READ', '3': 'CURSOR STABILITY', '5': 'REPEATABLE READ', '8': 'DIRTY READ (retain)',
+             '9': 'COMMITTED READ (retain)', '10': 'CURSOR STABILITY (retain)', '11': 'COMMITTED READ LAST COMMITTED'}
+
+
+def expert_informix(s):
+    d = s['dossier']
+    temp = set()
+    for v in s['conf'].get('DBSPACETEMP', []):
+        temp |= set(x.strip() for x in re.split(r'[,:]', v) if x.strip())
+    temp |= set(x['nom'] for x in (s.get('inv') or {}).get('dbspaces', []) if x['temp'])
+    return {'chunks': vitesse_chunks(d), 'ioq': files_io(d), 'mutex': contention_mutex(d), 'buf': pool_buffers(d), 'log': buffers_log(d),
+            'blocage': chaines_blocage(d), 'memoire': memoire_sessions(d), 'temp': temp_dbspaces(d, temp), 'cfg': config_a_chaud(d, s['conf']),
+            'sql': requetes_sql(d)}
+
+
+def regles_expert(s):
+    x, r, inv = s.get('exp') or {}, [], s.get('inv') or {}
+    add = lambda *a: r.append(a)
+    # vitesse des chunks
+    lents = []
+    for ch, serie in (x.get('chunks') or {}).items():
+        le, ec = stats([e['lect_ms'] for e in serie]), stats([e['ecr_ms'] for e in serie])
+        if (le['p95'] or 0) > 15 or (ec['p95'] or 0) > 15:
+            lents.append((ch, le, ec, stats([e['lect_mo_s'] + e['ecr_mo_s'] for e in serie])))
+    if lents:
+        lents.sort(key=lambda z: -max(z[1]['p95'] or 0, z[2]['p95'] or 0))
+        add('haute', 'Informix', 'Temps de réponse des chunks dégradé par moments',
+            ' ; '.join('%s : lecture p95 %s ms, écriture p95 %s ms, débit max %s Mo/s' % (c, fmt(a['p95']), fmt(b['p95']), fmt(m['max'])) for c, a, b, m in lents[:4]),
+            'Mesuré par Informix sur chaque intervalle : le stockage ne suit pas aux heures de pointe. Croiser avec l\'occupation des disques (iostat) et la baie ; '
+            'répartir les chunks chauds (données, index, logs, temporaires) sur des LUN distinctes.')
+    q = stats([e['len_max'] for e in x.get('ioq') or []])
+    if (q['p95'] or 0) >= 4:
+        add('haute' if q['p95'] >= 10 else 'moyenne', 'Informix', 'Files d\'attente d\'I/O du moteur',
+            'longueur max d\'une file AIO/KAIO : p95 %s, max %s requêtes en attente' % (fmt(q['p95']), fmt(q['max'])),
+            'Les requêtes d\'I/O s\'accumulent : stockage saturé ou trop peu de files (KAIO / AIO VP). Vérifier le temps de réponse disque et AUTO_AIOVPS.')
+    mx = [m for m in (x.get('mutex') or []) if m['attentes_min'] >= 500]
+    if mx:
+        add('moyenne' if mx[0]['attentes_min'] < 5000 else 'haute', 'Informix', 'Contention sur les mutex internes',
+            ' ; '.join('%s : %s attentes/min%s' % (m['nom'], fmt_n(m['attentes_min']), (' (%s)' % m['indice']) if m['indice'] else '') for m in mx[:4]),
+            'Les threads se disputent une structure interne du moteur : traiter la cause indiquée (ex. table des verrous → isolation et verrouillage par ligne ; '
+            'buffers → pages chaudes et nombre de LRU).')
+    for taille, b in (x.get('buf') or {}).items():
+        if b['d_fg'] > 0:
+            add('haute', 'Informix', 'Écritures au premier plan dans le pool %s Ko' % (int(taille) // 1024 if int(taille) >= 1024 else taille),
+                '%s écritures au premier plan, %s écritures LRU, %s écritures de chunk sur la période' % (fmt_n(b['d_fg']), fmt_n(b['d_lru']), fmt_n(b['d_chunk'])),
+                'Des sessions écrivent elles-mêmes faute de buffer propre : augmenter CLEANERS, abaisser lru_max_dirty du BUFFERPOOL concerné.')
+        elif (b['part_chunk'] or 0) > 70:
+            add('info', 'Informix', 'Écritures concentrées aux checkpoints (pool %s)' % taille, '%.0f %% des écritures sont des écritures de chunk' % b['part_chunk'],
+                'Les pages modifiées s\'accumulent jusqu\'au checkpoint : des checkpoints plus longs sont à prévoir. Abaisser lru_max_dirty répartit les écritures.')
+    lg = x.get('log') or {}
+    prof = s.get('profil') or []
+    commits = stats([e['commit_s'] for e in prof])['moy'] or 0
+    if lg.get('l_pages_par_io') is not None and lg['l_pages_par_io'] < 1.5 and commits > 20:
+        nb = [b for b, v in inv.get('bases', {}).items() if v['journalisee'] and not v['log_bufferise']]
+        add('moyenne', 'Informix', 'Buffer de log logique vidé à chaque validation',
+            '%.2f page par écriture de log, %.0f validations/s%s' % (lg['l_pages_par_io'], commits, ' ; journalisation non bufferisée : %s' % ', '.join(nb) if nb else ''),
+            'Chaque COMMIT attend une écriture disque du log : le disque des logs doit être très rapide (temps d\'écriture < 2 ms). La journalisation bufferisée '
+            '(ondblog buf) réduit ces écritures au prix d\'un risque de perte des dernières transactions en cas d\'arrêt brutal ; regrouper les validations des traitements de masse.')
+    if (lg.get('phys_max') or 0) > 75:
+        add('moyenne', 'Informix', 'Log physique très rempli', 'occupation max %.0f %%' % lg['phys_max'],
+            'Au-delà de 75 %, un checkpoint est déclenché (et devient bloquant s\'il se remplit) : augmenter PHYSFILE.')
+    ra = stats([e.get('ra_eff') for e in prof])
+    if ra['moy'] is not None and ra['moy'] < 50:
+        add('info', 'Informix', 'Lecture anticipée peu efficace', 'pages lues par anticipation réellement utilisées : %.0f %%' % ra['moy'],
+            'Les pages lues d\'avance sont en grande partie inutiles (accès dispersés) : AUTO_READAHEAD / RA_PAGES plus bas.')
+    bl = x.get('blocage') or {}
+    for t in [t for t in bl.get('tenants', []) if len(t['releves']) >= 2 or t['attentes'] >= 2][:3]:
+        add('haute', 'Verrous', 'Session %s bloque d\'autres sessions (%s@%s)' % (t['sid'], t['utilisateur'] or '?', t['poste'] or '?'),
+            '%d attente(s) causée(s) sur %d relevé(s) entre %s et %s ; tables : %s ; sessions bloquées : %s' % (
+                t['attentes'], len(t['releves']), t['premier'].strftime('%H:%M'), t['dernier'].strftime('%H:%M'),
+                ', '.join('%s (%d)' % kv for kv in sorted(t['tables'].items(), key=lambda kv: -kv[1])[:3]), ', '.join(sorted(t['bloques'])[:6])),
+            'Identifier le programme (processus %s sur %s, onstat -g ses %s / -g sql %s) : transaction trop longue ou verrous posés en lecture ; '
+            'valider plus souvent, réduire l\'isolation des lectures, verrouillage par ligne.' % (t['pid'], t['poste'], t['sid'], t['sid']))
+    gros = [m for m in (x.get('memoire') or []) if m['mo'] >= 500]
+    if gros:
+        add('moyenne', 'Informix', 'Sessions très consommatrices de mémoire',
+            ' ; '.join('session %s (%s@%s) : %s Mo' % (m['sid'], m['utilisateur'], m['poste'], fmt(m['mo'])) for m in gros[:5]),
+            'Mémoire du segment virtuel par session (curseurs, tris, tables temporaires) : vérifier les curseurs non libérés et les tris en mémoire du programme.')
+    for nom in sorted({k for e in x.get('temp') or [] for k in e if k != 'ts'}):
+        pic = stats([e.get(nom) for e in x['temp']])['max']
+        if (pic or 0) > 80:
+            add('moyenne', 'Informix', 'Dbspace temporaire %s presque plein' % nom, 'occupation max %.0f %%' % pic,
+                'Tris et tables temporaires volumineux : risque d\'erreur « no free space » ; identifier les requêtes (tris disque de la trace SQL), agrandir le dbspace.')
+    if x.get('cfg'):
+        add('info', 'Configuration', 'Paramètres modifiés à chaud (différents du fichier ONCONFIG)',
+            ' ; '.join('%s : fichier %s, en mémoire %s' % c for c in x['cfg'][:8]),
+            'Ces valeurs seront perdues au prochain redémarrage : reporter dans l\'ONCONFIG celles à conserver (onmode -wf).')
+    # santé des tables et index
+    ob = s.get('obj') or {}
+    chaudes = set()
+    for k in ('verrous', 'logiques', 'scans'):
+        for o, _v, _p, _f in classements(ob).get(k, {}).get('liste', [])[:15]:
+            chaudes.add((o['base'], o['table']))
+    page = [k for k, v in inv.get('stats', {}).items() if v.get('verrou') == 'P']
+    page_chaudes = [k for k in page if k in chaudes]
+    if page_chaudes:
+        contention = (stats([e['lockwts_min'] for e in prof])['moy'] or 0) > 30 or (stats([e['att_L'] for e in s.get('sessions') or []])['p95'] or 0) >= 3
+        add('haute' if contention else 'moyenne', 'Objets', 'Tables très sollicitées en verrouillage par page',
+            ', '.join(t for _b, t in page_chaudes[:10]) + (' ; %d table(s) en verrouillage par page au total' % len(page)),
+            'Un verrou de page bloque toutes les lignes de la page : ALTER TABLE … LOCK MODE (ROW) sur ces tables (opération rapide, à planifier hors activité).')
+    elif page:
+        add('info', 'Objets', 'Tables en verrouillage par page', '%d table(s), ex. %s' % (len(page), ', '.join(t for _b, t in page[:6])),
+            'Le verrouillage par ligne limite la contention en OLTP (ALTER TABLE … LOCK MODE (ROW)).')
+    indexees = set((b, v['table']) for (b, _i), v in inv.get('index_detail', {}).items()) | set((b, t) for (b, _i), t in inv.get('index', {}).items())
+    sans = sorted([(k, v) for k, v in inv.get('stats', {}).items() if (v['nrows'] or 0) >= 10000 and k not in indexees and inv.get('index')],
+                  key=lambda kv: -(kv[1]['nrows'] or 0))
+    if sans:
+        add('moyenne', 'Objets', 'Grosses tables sans aucun index', ' ; '.join('%s : %s lignes' % (k[1], fmt_n(v['nrows'])) for k, v in sans[:8]),
+            'Toute recherche sur ces tables est un scan complet : créer au moins l\'index de la clé d\'accès (à valider avec l\'éditeur).')
+    det = inv.get('index_detail', {})
+    par_table = {}
+    for (b, i), v in det.items():
+        par_table.setdefault((b, v['table']), []).append((i, v))
+    redond = []
+    for (b, t), L in par_table.items():
+        for i1, v1 in L:
+            for i2, v2 in L:
+                if i1 != i2 and v1['colonnes'] and len(v1['colonnes']) < len(v2['colonnes']) + (0 if v1['type'] == 'U' else 1) \
+                        and v2['colonnes'][:len(v1['colonnes'])] == v1['colonnes'] and v1['type'] != 'U' and (i1, i2) not in [(z[1], z[0]) for z in redond] \
+                        and i1 not in [z[0] for z in redond]:
+                    redond.append((i1, i2, t))
+    if redond:
+        add('info', 'Objets', 'Index probablement redondants', ' ; '.join('%s couvert par %s (%s)' % z for z in redond[:8]),
+            'Un index dont les colonnes sont le début d\'un autre index de la même table est en général inutile et coûte à chaque écriture : vérifier son usage avant suppression.')
+    profonds = sorted([(i, v) for (_b, i), v in det.items() if (v['niveaux'] or 0) >= 5], key=lambda iv: -(iv[1]['niveaux'] or 0))
+    if profonds:
+        add('info', 'Objets', 'Index profonds (5 niveaux ou plus)', ', '.join('%s (%d niveaux)' % (i, v['niveaux']) for i, v in profonds[:8]),
+            'Chaque recherche traverse plus de pages : clé très large ou index fragmenté ; reconstruire hors production ou revoir la clé.')
+    creux = sorted([(k, v) for k, v in inv.get('tailles', {}).items() if v['nptotal'] >= 100000 and v['npused'] < 0.5 * v['nptotal']], key=lambda kv: -kv[1]['nptotal'])
+    if creux:
+        add('info', 'Stockage Informix', 'Tables avec beaucoup d\'espace alloué non utilisé',
+            ' ; '.join('%s : %.0f %% utilisé sur %s pages' % (k[1], 100.0 * v['npused'] / v['nptotal'], fmt_n(v['nptotal'])) for k, v in creux[:6]),
+            'Espace libéré par des suppressions : réorganisation (repack/shrink via sysadmin) pour récupérer l\'espace, utile avec un dbspace presque plein.')
+    # trace SQL
+    sq = x.get('sql')
+    if sq and sq['groupes']:
+        tot = sq['total']
+        for cle, lib in (('pgreads', 'des lectures disque tracées'), ('duree', 'du temps d\'exécution tracé'), ('lockwaits', 'des attentes de verrou tracées')):
+            if not tot[cle]:
+                continue
+            g = max(sq['groupes'], key=lambda g: g[cle])
+            part = 100.0 * g[cle] / tot[cle]
+            if part >= 20:
+                add('haute', 'Requêtes SQL', 'Une requête représente %.0f %% %s' % (part, lib),
+                    '%s exécution(s), %s pages lues sur disque, %s lectures en mémoire, %s s cumulées ; isolation %s ; « %s »' % (
+                        fmt_n(g['exec']), fmt_n(g['pgreads']), fmt_n(g['bfreads']), fmt(g['duree']),
+                        ', '.join(ISOLATION.get(z, z) for z in sorted(g['isolation'])) or '?', g['texte'][:220]),
+                    'Analyser le plan (SET EXPLAIN ON sur la requête), les index utilisés et les statistiques des tables citées ; si elle est exécutée en boucle, '
+                    'revoir le traitement côté programme.')
+        boucles = sorted([g for g in sq['groupes'] if g['exec'] >= 1000 and g['exec'] >= 0.2 * tot['exec']], key=lambda g: -g['exec'])
+        if boucles:
+            add('moyenne', 'Requêtes SQL', 'Requête exécutée en boucle', '%s exécutions (%.0f %% des requêtes tracées) : « %s »' % (
+                fmt_n(boucles[0]['exec']), 100.0 * boucles[0]['exec'] / tot['exec'], boucles[0]['texte'][:200]),
+                'Traitement ligne à ligne probable : regrouper (jointure, IN, traitement ensembliste) ou mettre en cache côté programme.')
+        rr = [g for g in sq['groupes'] if '5' in g['isolation'] and g['lockwaits']]
+        if rr:
+            add('moyenne', 'Requêtes SQL', 'Lectures en REPEATABLE READ avec attentes de verrou', ' ; '.join('« %s »' % g['texte'][:120] for g in rr[:3]),
+                'REPEATABLE READ verrouille chaque ligne lue jusqu\'à la fin de la transaction : COMMITTED READ suffit en général pour la consultation.')
+    return r
+
+
+def section_expert(s, t0, t1, marq):
+    x = s.get('exp') or {}
+    o = ['<h3>Analyse experte Informix</h3>']
+    prof = s.get('profil') or []
+    st = lambda k: stats([e.get(k) for e in prof])
+    lg = x.get('log') or {}
+    kpi = [('Validations /s', fmt(st('commit_s')['moy'])), ('Opérations ISAM /s', fmt_n(st('isam_s')['moy'])), ('Lectures logiques /s', fmt_n(st('bufreads_s')['moy'])),
+           ('Lectures disque /s', fmt_n(st('dskreads_s')['moy'])), ('Écritures disque /s', fmt_n(st('dskwrits_s')['moy'])),
+           ('Lecture anticipée utile', pct(st('ra_eff')['moy'])), ('Pages / écriture log logique', fmt(lg.get('l_pages_par_io'))),
+           ('Log physique max', pct(lg.get('phys_max')))]
+    o.append('<div class="k">%s</div>' % ''.join('<div class="c"><div class="v">%s</div><div class="l">%s</div></div>' % (v, esc(l)) for l, v in kpi))
+    ch = x.get('chunks') or {}
+    if ch:
+        lignes = []
+        for c, serie in sorted(ch.items(), key=lambda kv: -stats([e['lect_mo_s'] + e['ecr_mo_s'] for e in kv[1]])['moy']):
+            lm, em, io_, la, ea = (stats([e[k] for e in serie]) for k in ('lect_mo_s', 'ecr_mo_s', 'iops', 'lect_ms', 'ecr_ms'))
+            lignes.append(['<span class="mono">%s</span>' % esc(c), fmt(lm['moy']), fmt(lm['max']), fmt(em['moy']), fmt(em['max']), fmt(io_['moy']), fmt(io_['max']),
+                           fmt(la['moy']), fmt(la['p95']), fmt(ea['moy']), fmt(ea['p95'])])
+        o.append('<h3>Vitesse des chunks (par intervalle, onstat -g iof)</h3>' + tableau(
+            ['Chunk', 'Lecture Mo/s moy.', 'max', 'Écriture Mo/s moy.', 'max', 'IOPS moy.', 'max', 'Lecture ms moy.', 'p95', 'Écriture ms moy.', 'p95'], lignes[:25]))
+    graphes = []
+    if ch:
+        top = sorted(ch.items(), key=lambda kv: -stats([e['lect_mo_s'] + e['ecr_mo_s'] for e in kv[1]])['moy'])[:4]
+        graphes += [
+            courbe('Chunks : débit lecture + écriture (Mo/s)', [(os.path.basename(c), COULEURS[i], [dict(ts=e['ts'], v=e['lect_mo_s'] + e['ecr_mo_s']) for e in sv], 'v')
+                                                              for i, (c, sv) in enumerate(top)], t0, t1, marq, ' Mo/s'),
+            courbe('Chunks : temps de réponse en écriture (ms)', [(os.path.basename(c), COULEURS[i], sv, 'ecr_ms') for i, (c, sv) in enumerate(top)], t0, t1, marq, ' ms')]
+    if x.get('ioq'):
+        graphes.append(courbe('Files d\'I/O du moteur : plus longue file (onstat -g ioq)', [('requêtes en attente', COULEURS[7], x['ioq'], 'len_max')], t0, t1, marq))
+    if x.get('temp'):
+        noms = sorted({k for e in x['temp'] for k in e if k != 'ts'})
+        graphes.append(courbe('Dbspaces temporaires : occupation (%)', [(n, COULEURS[i % len(COULEURS)], x['temp'], n) for i, n in enumerate(noms)], t0, t1, marq, ' %', ymax=100))
+    graphes = [g for g in graphes if g]
+    if graphes:
+        o.append('<div class="g">%s</div>' % ''.join(graphes))
+    if x.get('mutex'):
+        o.append('<details open><summary>Contention sur les mutex (onstat -g spi)</summary>%s</details>' % tableau(
+            ['Mutex / spin lock', 'Attentes /min', 'Boucles par attente', 'Interprétation'],
+            [[esc(m['nom']), fmt_n(m['attentes_min']), fmt(m['boucles_par_attente']), esc(m['indice'])] for m in x['mutex']]))
+    if x.get('buf'):
+        o.append('<details><summary>Écritures par pool de buffers (onstat -g buf)</summary>%s</details>' % tableau(
+            ['Taille de page', 'Premier plan', 'LRU', 'Chunk (checkpoints)', 'Part chunk'],
+            [[esc(k), fmt_n(v['d_fg']), fmt_n(v['d_lru']), fmt_n(v['d_chunk']), pct(v['part_chunk'])] for k, v in sorted(x['buf'].items())]))
+    bl = x.get('blocage') or {}
+    if bl.get('tenants'):
+        o.append('<h3>Chaînes de blocage (qui bloque qui)</h3><p class="d">%d relevé(s) effectué(s) quand au moins 2 sessions attendaient un verrou.</p>%s' % (
+            bl['releves'], tableau(['Session bloquante', 'Utilisateur', 'Poste', 'PID', 'Attentes causées', 'Relevés', 'De', 'À', 'Tables', 'Sessions bloquées'],
+                                   [[esc(t['sid']), esc(t['utilisateur']), esc(t['poste']), esc(t['pid']), str(t['attentes']), str(len(t['releves'])),
+                                     t['premier'].strftime('%H:%M:%S'), t['dernier'].strftime('%H:%M:%S'),
+                                     esc(', '.join('%s (%d)' % kv for kv in sorted(t['tables'].items(), key=lambda kv: -kv[1])[:4])),
+                                     esc(', '.join(sorted(t['bloques'])[:8]))] for t in bl['tenants'][:20]])))
+    if x.get('memoire'):
+        o.append('<details><summary>Sessions les plus consommatrices de mémoire</summary>%s</details>' % tableau(
+            ['Session', 'Utilisateur', 'Poste', 'PID', 'Mémoire max (Mo)'],
+            [[esc(m['sid']), esc(m['utilisateur']), esc(m['poste']), esc(m['pid']), fmt(m['mo'])] for m in x['memoire']]))
+    if x.get('cfg'):
+        o.append('<details><summary>Paramètres modifiés à chaud</summary>%s</details>' % tableau(['Paramètre', 'Fichier ONCONFIG', 'Valeur en mémoire'],
+                                                                                          [[esc(a), esc(b), esc(c)] for a, b, c in x['cfg']]))
+    inv = s.get('inv') or {}
+    if inv.get('index_detail'):
+        det = sorted(inv['index_detail'].items(), key=lambda kv: -(kv[1]['feuilles'] or 0))[:25]
+        o.append('<details><summary>Structure des plus gros index (sysindexes)</summary>%s</details>' % tableau(
+            ['Index', 'Table', 'Type', 'Niveaux', 'Pages feuilles', 'Clés distinctes', 'Colonnes (n° ; négatif = DESC)'],
+            [[esc(i), esc(v['table']), 'unique' if v['type'] == 'U' else 'doublons', fmt(v['niveaux']), fmt_n(v['feuilles']), fmt_n(v['uniques']),
+              esc(', '.join(str(c) for c in v['colonnes']))] for (_b, i), v in det]))
+    sq = x.get('sql')
+    if sq and sq['groupes']:
+        o.append('<h3>Requêtes SQL tracées (%d exécutions, %d formes distinctes)</h3>' % (sq['nb'], len(sq['groupes'])))
+        for cle, titre in (('pgreads', 'par lectures disque'), ('bfreads', 'par lectures en mémoire (CPU)'), ('duree', 'par temps d\'exécution cumulé'),
+                           ('lockwaits', 'par attentes de verrou'), ('exec', 'par nombre d\'exécutions')):
+            L = [g for g in sorted(sq['groupes'], key=lambda g: -g[cle]) if g[cle]][:12]
+            if L:
+                o.append('<details%s><summary>Top %s</summary>%s</details>' % (' open' if cle == 'pgreads' else '', esc(titre), tableau(
+                    ['Exécutions', 'Pages disque', 'Lectures mémoire', 'Durée cumulée (s)', 'Attentes verrou', 'Tris disque', 'Lignes', 'Sessions', 'Isolation', 'Requête (littéraux → ?)'],
+                    [[fmt_n(g['exec']), fmt_n(g['pgreads']), fmt_n(g['bfreads']), fmt(g['duree']), fmt_n(g['lockwaits']), fmt_n(g['tris_disque']), fmt_n(g['lignes']),
+                      str(len(g['sessions'])), esc(', '.join(ISOLATION.get(z, z) for z in sorted(g['isolation']))), '<span class="mono">%s</span>' % esc(g['texte'])] for g in L])))
+    else:
+        o.append('<p class="d">Trace SQL non activée : relancer l\'audit avec <span class="mono">--trace-sql</span> pour relier les objets coûteux aux requêtes '
+                 '(top des requêtes par lectures, durée, verrous, tris disque).</p>')
+    return ''.join(o)
+
+
+# --------------------------------------------------------------------------------------------
 # Chargement d'un serveur
 # --------------------------------------------------------------------------------------------
 def charger(d):
@@ -1244,6 +1744,7 @@ def charger(d):
         s['obj'] = objets(d, s['inv'], ups[-1] if ups else None)
         s['ses_prof'], s['dio'] = sessions_profil(d), ouverture_chunks(d)
         s['prog'] = programmes(d)
+        s['exp'] = expert_informix(s)
         s['aprog'] = analyse_programmes(s)
         if not s['ckp']:
             s['ckp'] = ckp_log
@@ -1476,7 +1977,7 @@ def diagnostic(s):
                 'RESIDENT -1 empêche la mise en swap de la mémoire partagée (avec suffisamment de RAM).')
         if not cf.get('DBSPACETEMP'):
             add('info', 'Informix', 'Pas de DBSPACETEMP', 'DBSPACETEMP absent', 'Les tris et tables temporaires vont dans le rootdbs : définir des dbspaces temporaires dédiés.')
-        for x in regles_objets(s) + regles_programmes(s):
+        for x in regles_objets(s) + regles_programmes(s) + regles_expert(s):
             add(*x)
         ram = s['mem'][-1]['total_mo'] if s['mem'] else 0
         fich = [x for x in s.get('dio', []) if x['type'] == 'fichier']
@@ -1924,6 +2425,7 @@ def section_informix(s):
     if s['journal']:
         o.append('<h3>Journal du moteur (messages notables)</h3>' + tableau(['Heure', 'Gravité', 'Message'],
                                                                          [[h.strftime('%d/%m %H:%M:%S'), badge(g), '<span class="mono">%s</span>' % esc(m)] for h, g, m in s['journal'][:200]]))
+    o.append(section_expert(s, s['debut'], s['fin'], []))
     o.append(section_objets(s))
     o.append(section_programmes(s, s['debut'], s['fin'], []))
     sqlb = blocs(os.path.join(s['dossier'], 'informix', 'sql_sysmaster.raw'))
@@ -2029,7 +2531,7 @@ def section_objets(s):
 PRIO = {'critique': 'Immédiat', 'haute': 'P1', 'moyenne': 'P2', 'info': 'P3'}
 NATURE = {'CPU': 'Système', 'Disques': 'Système', 'Mémoire': 'Système', 'Système': 'Système', 'Virtualisation': 'Système', 'Réseau': 'Système',
           'Informix': 'Base de données', 'Réplication': 'Base de données', 'Stockage Informix': 'Base de données',
-          'Configuration': 'Configuration Informix (ONCONFIG)', 'Objets': 'Base de données et applicatif', 'Programmes IRIUM': 'Applicatif',
+          'Configuration': 'Configuration Informix (ONCONFIG)', 'Objets': 'Base de données et applicatif', 'Programmes IRIUM': 'Applicatif', 'Verrous': 'Base de données et applicatif', 'Requêtes SQL': 'Base de données et applicatif',
           'Services': 'Système et applicatif'}
 
 

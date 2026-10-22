@@ -26,6 +26,8 @@
 # Options communes : [--partage DIR] (défaut : dossier du script)  [--sortie /var/tmp/scania-fr] (travail local)
 #   [--motifs 'ipscrond|fglrun|...']  [--services 'digital_dealer|autre_service']  [--table-programmes agr_lds]  [--sans-sql]  [--sans-rapport]
 #   [--informixdir DIR --informixserver NOM --onconfig FICHIER]
+#   [--trace-sql]  trace SQL du moteur (sysadmin task) pendant l'audit sur la base principale, coupée à la fin :
+#                  top des requêtes par lectures, durée, verrous, tris disque (seule option non « lecture seule »)
 # Impact : quelques commandes « onstat » (lecture de la mémoire partagée), lectures de /proc et requêtes sysmaster /
 # catalogue en lecture seule. Aucune commande lourde (oncheck, update statistics...) n'est lancée, rien n'est modifié.
 # =============================================================================================
@@ -40,6 +42,8 @@ BDD_HOTE=""
 BDD_PORT=""
 ROLE=auto
 AVEC_SQL=1
+TRACE_SQL=0   # --trace-sql : trace SQL du moteur pendant l'audit (seule option qui modifie l'état du moteur, désactivée à la fin)
+TRACE_ACTIVEE=0 DERNIER_VERROUS=0
 RAPPORT=1
 SCRIPT="$(readlink -f "$0")"
 PARTAGE="$(dirname "$SCRIPT")"
@@ -95,7 +99,9 @@ detecter_role() {
       *"(Sec)"*|*"Read-Only"*) ROLES+=("bdd-replica-hdr") ;;
       *"(RSS)"*) ROLES+=("bdd-replica-rss") ;;
       *"(SDS)"*) ROLES+=("bdd-replica-sds") ;;
-      *) ROLES+=("bdd") ;;
+      *)   # en-tête sans indicateur : serveur autonome ou primaire, à confirmer par onstat -g rss / -g dri
+        if timeout 20 onstat -g rss 2>/dev/null | grep -qi 'Local server type: *Primary' || timeout 20 onstat -g dri 2>/dev/null | grep -qiE '^\s*(primary|standard)\b' \
+           || ! timeout 20 onstat -g dri 2>/dev/null | grep -qiE 'secondary'; then ROLES+=("bdd-principale"); else ROLES+=("bdd"); fi ;;
     esac
   fi
   pgrep -f ipscrond >/dev/null 2>&1 && ROLES+=("batch-ipscrond")
@@ -182,6 +188,53 @@ statique_informix() {
   ouverture_chunks
   inventaire_sql
   programmes_init
+  trace_sql_demarrer
+}
+
+# ---------------------------------------------------------------------------------------------
+# Informix expert : chaînes de blocage, mémoire des sessions, trace SQL (option)
+# ---------------------------------------------------------------------------------------------
+releve_unl() {   # releve_unl <fichier raw> <base> <requête> : ajoute le résultat horodaté
+  local t="$DOSSIER/informix/inventaire/tmp_rel.unl"
+  if unl "$2" "$t" "$3"; then { horodatage; cat "$t" 2>/dev/null; echo; } >> "$1"; fi
+  rm -f "$t"
+}
+
+chaines_verrous() {
+  releve_unl "$DOSSIER/informix/verrous_attente.raw" sysmaster \
+    "SELECT FIRST 200 TRIM(l.dbsname), TRIM(l.tabname), TRIM(l.type), l.owner, TRIM(so.username), TRIM(so.hostname), so.pid, l.waiter, TRIM(sw.username), TRIM(sw.hostname) FROM syslocks l, OUTER syssessions so, OUTER syssessions sw WHERE l.waiter > 0 AND so.sid = l.owner AND sw.sid = l.waiter"
+}
+
+memoire_sessions() {
+  releve_unl "$DOSSIER/informix/memoire_sessions.raw" sysmaster \
+    "SELECT FIRST 20 m.sid, TRIM(s.username), TRIM(s.hostname), s.pid, m.memtotal, m.memused FROM sysscblst m, syssessions s WHERE m.sid = s.sid ORDER BY m.memtotal DESC"
+}
+
+trace_sql_demarrer() {
+  [ "$TRACE_SQL" -eq 1 ] && [ "$IFX" -eq 1 ] && [ "$AVEC_SQL" -eq 1 ] && [[ "$ROLE_TXT" == *bdd-principale* ]] || return 0
+  local cf="${INFORMIXDIR}/etc/${ONCONFIG:-onconfig}"
+  if grep -qE '^\s*SQLTRACE\s+.*level=(low|med|high)' "$cf" 2>/dev/null; then
+    journal "Trace SQL déjà active (SQLTRACE dans l'ONCONFIG) : relevé seul, sans modification"
+  elif timeout 60 dbaccess sysadmin - >> "$DOSSIER/informix/inventaire/erreurs_sql.txt" 2>&1 <<'EOSQL'
+EXECUTE FUNCTION task('set sql tracing on', 3000, '4k', 'low', 'global');
+EOSQL
+  then TRACE_ACTIVEE=1; journal "Trace SQL activée pour la durée de l'audit (3000 requêtes en mémoire, niveau low)"
+  else journal "Activation de la trace SQL impossible (voir informix/inventaire/erreurs_sql.txt)"; TRACE_SQL=0; return 0; fi
+  unl sysmaster "$DOSSIER/informix/trace_sql_colonnes.unl" "SELECT TRIM(c.colname) FROM syscolumns c, systables t WHERE c.tabid = t.tabid AND t.tabname = 'syssqltrace' ORDER BY c.colno"
+}
+
+trace_sql_releve() {   # le tampon est circulaire : relevé toutes les 5 minutes, dédoublonné par le rapport
+  [ "$TRACE_SQL" -eq 1 ] || return 0
+  releve_unl "$DOSSIER/informix/trace_sql.raw" sysmaster "SELECT * FROM syssqltrace"
+}
+
+trace_sql_arreter() {
+  [ "$TRACE_ACTIVEE" -eq 1 ] || return 0
+  trace_sql_releve
+  timeout 60 dbaccess sysadmin - >> "$DOSSIER/informix/inventaire/erreurs_sql.txt" 2>&1 <<'EOSQL'
+EXECUTE FUNCTION task('set sql tracing off');
+EOSQL
+  TRACE_ACTIVEE=0; journal "Trace SQL désactivée"
 }
 
 # Journal des programmes IRIUM (table agr_lds : un enregistrement par programme lancé) sur la base principale
@@ -257,12 +310,13 @@ inventaire_sql() {
   unl sysmaster "$v/dbspaces.unl" "SELECT TRIM(d.name), d.is_temp, d.is_blobspace, SUM(c.chksize), SUM(c.nfree), COUNT(*) FROM sysdbspaces d, syschunks c WHERE d.dbsnum = c.dbsnum GROUP BY 1, 2, 3"
   unl sysmaster "$v/partitions.unl" "SELECT partnum, TRIM(dbsname), TRIM(tabname) FROM systabnames WHERE dbsname NOT IN ($sysb)"
   unl sysmaster "$v/tailles.unl" "SELECT FIRST 300 TRIM(n.dbsname), TRIM(n.tabname), h.nptotal, h.npused, h.nrows, h.nextns FROM systabnames n, sysptnhdr h WHERE n.partnum = h.partnum AND n.dbsname NOT IN ($sysb) ORDER BY h.nptotal DESC"
-  unl sysmaster "$v/bases.unl" "SELECT TRIM(name) FROM sysdatabases WHERE name NOT IN ($sysb)"
+  unl sysmaster "$v/bases.unl" "SELECT TRIM(name), is_logging, is_buff_log, is_ansi FROM sysdatabases WHERE name NOT IN ($sysb)"
   for b in $(cut -d'|' -f1 "$v/bases.unl" 2>/dev/null | head -10); do
     [[ "$b" =~ ^[A-Za-z0-9_]+$ ]] || continue
-    unl "$b" "$v/stats_$b.unl" "SELECT TRIM(tabname), nrows, npused, ustlowts FROM systables WHERE tabid > 99 AND tabtype = 'T'"
+    unl "$b" "$v/stats_$b.unl" "SELECT TRIM(tabname), nrows, npused, ustlowts, locklevel, rowsize FROM systables WHERE tabid > 99 AND tabtype = 'T'"
     unl "$b" "$v/distrib_$b.unl" "SELECT TRIM(t.tabname), MAX(d.constructed), COUNT(*) FROM sysdistrib d, systables t WHERE d.tabid = t.tabid AND t.tabid > 99 GROUP BY 1"
-    unl "$b" "$v/index_$b.unl" "SELECT TRIM(i.idxname), TRIM(t.tabname) FROM sysindexes i, systables t WHERE i.tabid = t.tabid AND t.tabid > 99"
+    unl "$b" "$v/index_$b.unl" "SELECT TRIM(i.idxname), TRIM(t.tabname), i.idxtype, i.clustered, i.levels, i.leaves, i.nunique, i.part1, i.part2, i.part3, i.part4, i.part5, i.part6, i.part7, i.part8 FROM sysindexes i, systables t WHERE i.tabid = t.tabid AND t.tabid > 99" \
+      || unl "$b" "$v/index_$b.unl" "SELECT TRIM(i.idxname), TRIM(t.tabname) FROM sysindexes i, systables t WHERE i.tabid = t.tabid AND t.tabid > 99"
   done
 }
 
@@ -344,7 +398,12 @@ echantillon_informix() {
   [ "$IFX" -eq 1 ] || return 0
   local i="$DOSSIER/informix"
   brut "$i/onstat_p.raw" onstat -p
-  brut "$i/onstat_u.raw" onstat -u
+  local u; u="$(timeout 60 onstat -u 2>&1)"
+  { horodatage; echo "$u"; echo; } >> "$i/onstat_u.raw"
+  # au moins 2 sessions en attente de verrou : qui bloque qui (au plus toutes les 2 minutes)
+  if [ "$(awk 'length($2) == 7 && substr($2, 1, 1) == "L"' <<< "$u" | wc -l)" -ge 2 ] && [ $(( $(date +%s) - DERNIER_VERROUS )) -ge 120 ]; then
+    DERNIER_VERROUS=$(date +%s); chaines_verrous
+  fi
   { horodatage; timeout 60 onstat -k 2>&1 | tail -3; echo; } >> "$i/onstat_k.raw"
   brut "$i/onstat_rea.raw" onstat -g rea
   brut "$i/onstat_F.raw" onstat -F
@@ -362,7 +421,11 @@ echantillon_informix_lent() {   # toutes les 5 minutes
   brut "$i/onstat_dri.raw" onstat -g dri
   brut "$i/onstat_x.raw" onstat -x
   brut "$i/onstat_wai.raw" onstat -g wai
+  brut "$i/onstat_spi.raw" onstat -g spi
+  brut "$i/onstat_ioq.raw" onstat -g ioq
+  brut "$i/onstat_buf.raw" onstat -g buf
   programmes_releve
+  trace_sql_releve
 }
 
 echantillon_informix_lourd() {  # toutes les 15 minutes
@@ -373,6 +436,8 @@ echantillon_informix_lourd() {  # toutes les 15 minutes
   brut "$i/onstat_ath.raw" onstat -g ath
   brut "$i/onstat_repl.raw" onstat -g repl
   brut "$i/onstat_rss.raw" onstat -g rss
+  brut "$i/onstat_d.raw" onstat -d
+  memoire_sessions
   sql_sysmaster
   profils_objets
 }
@@ -410,6 +475,7 @@ preparer() {
 }
 
 terminer() {
+  trace_sql_arreter
   echo "fin=$(date '+%F %T')" >> "$DOSSIER/info.txt"
   services_systemd fin
   [ "$IFX" -eq 1 ] && { timeout 60 onstat -g ckp > "$DOSSIER/informix/fin_onstat_ckp.txt" 2>&1
@@ -494,7 +560,7 @@ lire_conf_campagne() {   # charge campagne.conf (clé=valeur, sans exécution)
   while IFS='=' read -r k v; do
     case "$k" in
       duree) DUREE="$v";; intervalle) INTERVALLE="$v";; debut) DEBUT="$v";; bdd_hote) BDD_HOTE="$v";; bdd_port) BDD_PORT="$v";;
-      motifs) MOTIFS="$v";; services) SERVICES="$v";; sans_sql) [ "$v" = 1 ] && AVEC_SQL=0;; table_programmes) PROG_TABLE="$v";; serveurs) SERVEURS="$v";;
+      motifs) MOTIFS="$v";; services) SERVICES="$v";; sans_sql) [ "$v" = 1 ] && AVEC_SQL=0;; trace_sql) [ "$v" = 1 ] && TRACE_SQL=1;; table_programmes) PROG_TABLE="$v";; serveurs) SERVEURS="$v";;
     esac
   done < "$f"
 }
@@ -563,7 +629,7 @@ cmd_campagne() {
       [ -f "$c/campagne.conf" ] && grep -lq '^etat=en_cours' "$c"/*.etat 2>/dev/null && { echo "La campagne $CAMPAGNE est déjà en cours." >&2; exit 1; }
       rm -f "$c/ARRET"
       { echo "nom=$CAMPAGNE"; echo "creee_le=$(date '+%F %T')"; echo "par=${SUDO_USER:-${USER:-root}}@$HOTE"; echo "debut=$DEBUT"; echo "duree=$DUREE"
-        echo "intervalle=$INTERVALLE"; echo "bdd_hote=$BDD_HOTE"; echo "bdd_port=$BDD_PORT"; echo "motifs=$MOTIFS"; echo "services=$SERVICES"; echo "sans_sql=$((1 - AVEC_SQL))"
+        echo "intervalle=$INTERVALLE"; echo "bdd_hote=$BDD_HOTE"; echo "bdd_port=$BDD_PORT"; echo "motifs=$MOTIFS"; echo "services=$SERVICES"; echo "sans_sql=$((1 - AVEC_SQL))"; echo "trace_sql=$TRACE_SQL"
         echo "table_programmes=$PROG_TABLE"; echo "serveurs=${SERVEURS:-$HOTE}"; } > "$c/campagne.conf"
       echo "Campagne $CAMPAGNE : $c"
       local srv
@@ -692,7 +758,7 @@ cmd_supervision() {
   local a=(--duree "$DUREE" --intervalle "$INTERVALLE" --sortie "$SORTIE" --partage "$PARTAGE" --motifs "$MOTIFS" --services "$SERVICES" --role "$ROLE"
            --table-programmes "$PROG_TABLE")
   [ -n "$DEBUT" ] && a+=(--debut "$DEBUT"); [ -n "$BDD_HOTE" ] && a+=(--bdd-hote "$BDD_HOTE"); [ -n "$BDD_PORT" ] && a+=(--bdd-port "$BDD_PORT")
-  [ -n "$CAMPAGNE" ] && a+=(--campagne "$CAMPAGNE"); [ "$AVEC_SQL" -eq 0 ] && a+=(--sans-sql); [ "$RAPPORT" -eq 0 ] && a+=(--sans-rapport)
+  [ -n "$CAMPAGNE" ] && a+=(--campagne "$CAMPAGNE"); [ "$AVEC_SQL" -eq 0 ] && a+=(--sans-sql); [ "$TRACE_SQL" -eq 1 ] && a+=(--trace-sql); [ "$RAPPORT" -eq 0 ] && a+=(--sans-rapport)
   [ -n "$INFORMIXDIR_OPT" ] && a+=(--informixdir "$INFORMIXDIR_OPT"); [ -n "$INFORMIXSERVER_OPT" ] && a+=(--informixserver "$INFORMIXSERVER_OPT")
   [ -n "$ONCONFIG_OPT" ] && a+=(--onconfig "$ONCONFIG_OPT")
   # nouvelle session (setsid) : la supervision continue après la fermeture de la connexion SSH
@@ -746,7 +812,7 @@ while [ $# -gt 0 ]; do
     --duree) DUREE="$2"; shift 2;; --intervalle) INTERVALLE="$2"; shift 2;; --debut) DEBUT="$2"; shift 2;;
     --sortie) SORTIE="$2"; EN_COURS_LIEN="$SORTIE/en-cours"; shift 2;;
     --bdd-hote) BDD_HOTE="$2"; shift 2;; --bdd-port) BDD_PORT="$2"; shift 2;; --motifs) MOTIFS="$2"; shift 2;; --services) SERVICES="$2"; shift 2;;
-    --role) ROLE="$2"; shift 2;; --sans-sql) AVEC_SQL=0; shift;; --sans-rapport) RAPPORT=0; shift;;
+    --role) ROLE="$2"; shift 2;; --sans-sql) AVEC_SQL=0; shift;; --trace-sql) TRACE_SQL=1; shift;; --sans-rapport) RAPPORT=0; shift;;
     --informixdir) INFORMIXDIR_OPT="$2"; shift 2;; --informixserver) INFORMIXSERVER_OPT="$2"; shift 2;; --onconfig) ONCONFIG_OPT="$2"; shift 2;;
     --*) echo "Option inconnue : $1" >&2; exit 1;;
     *) RESTE+=("$1"); shift;;

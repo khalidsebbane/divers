@@ -320,3 +320,63 @@ def test_services_supervises(tmp_path):
 def stats_moy(serie):
     v = [e['cpu'] for e in serie if e.get('cpu') is not None]
     return sum(v) / len(v)
+
+
+IOF = """AIO global files:
+gfd pathname               bytes read      page reads  bytes write     page writes io/s
+3   /data/ifx/datadbs1  %d 60 %d 385 12.3
+        op type    count      avg. time
+        seeks      0          N/A
+        reads      %d         %s
+        writes     %d         %s
+"""
+
+
+def test_expert_informix(tmp_path):
+    d = str(tmp_path / 'srv')
+    fabriquer(d)
+    fabriquer_objets(d)
+    inf = lambda n: os.path.join(d, 'informix', n)
+    # chunk : 60 s entre deux relevés, 60 Mo lus, 1000 écritures de plus à 40 ms
+    with open(inf('onstat_iof.raw'), 'w') as f:
+        f.write(bloc(0, IOF % (0, 0, 100, '0.0050', 1000, '0.0100')) + bloc(60, IOF % (60 * 1048576, 0, 200, '0.0050', 2000, '0.0250')))
+    with open(inf('onstat_spi.raw'), 'w') as f:
+        f.write(bloc(0, '     100   1000   10.0 lockhash[1]\n     50   500   10.0 lockhash[2]\n') +
+                bloc(60, '     5100   51000   10.0 lockhash[1]\n     2050   20500   10.0 lockhash[2]\n'))
+    L = 'Logical Logging\nBuffer bufused  bufsize  numrecs    numpages   numwrits   recs/pages pages/io\n  L-2  0        32       %d  %d    %d    52.6       1.1\n'
+    with open(inf('onstat_l.raw'), 'w') as f:
+        f.write(bloc(0, L % (1000, 1000, 1000)) + bloc(60, L % (9000, 2000, 1900)))
+    with open(inf('verrous_attente.raw'), 'w') as f:
+        f.write(bloc(0, 'magix_prod|zag_ent|X|301500|ipscron|x0294se|14552|400001|u03|x0290se|\nmagix_prod|zag_ent|X|301500|ipscron|x0294se|14552|400002|u07|x0290se|\n'))
+    with open(inf('trace_sql_colonnes.unl'), 'w') as f:
+        f.write('sql_id|\nsql_sid|\nsql_runtime|\nsql_pgreads|\nsql_bfreads|\nsql_lockwaits|\nsql_isollevel|\nsql_statement|\n')
+    lignes = ''.join("%d|277616|2.0|90000|100000|0|5|SELECT * FROM sav_evt WHERE sev_cod = 'A%d'|\n" % (i, i) for i in range(10)) + \
+        ''.join('%d|301122|0.001|1|300|0|2|SELECT FIRST 1 * FROM agr_trf WHERE atr_cle = %d ORDER BY atr_dat DESC|\n' % (100 + i, i) for i in range(5))
+    with open(inf('trace_sql.raw'), 'w') as f:
+        f.write(bloc(0, lignes) + bloc(300, lignes))          # relevé en double : dédoublonné par sql_id
+    with open(os.path.join(d, 'informix', 'inventaire', 'index_magix_prod.unl'), 'w') as f:
+        f.write('i_a1|agr_trf|D|N|3|900|800|1|2|0|0|0|0|0|0|\ni_a2|agr_trf|D|N|2|700|500|1|0|0|0|0|0|0|0|\ni_u|agr_trf|U|N|6|100|100|1|0|0|0|0|0|0|0|\n')
+    with open(os.path.join(d, 'informix', 'inventaire', 'stats_magix_prod.unl'), 'a') as f:
+        f.write('zag_ent|2000000|516144|2026-10-01 02:00:00.00000|P|500|\n')
+    s = r.charger(d)
+    x = s['exp']
+    v = x['chunks']['/data/ifx/datadbs1'][0]
+    assert abs(v['lect_mo_s'] - 1.0) < 0.01 and abs(v['ecr_ms'] - 40.0) < 0.01 and abs(v['iops'] - 1100 / 60.0) < 0.01
+    assert x['mutex'][0]['nom'] == 'lockhash' and abs(x['mutex'][0]['attentes_min'] - 7000) < 1
+    assert abs(x['log']['l_pages_par_io'] - 1000 / 900.0) < 1e-6
+    sq = x['sql']
+    assert sq['nb'] == 15 and len(sq['groupes']) == 2
+    g = max(sq['groupes'], key=lambda g: g['pgreads'])
+    assert g['texte'] == 'SELECT * FROM sav_evt WHERE sev_cod = ?' and g['exec'] == 10 and g['isolation'] == {'5'}
+    t = {c[2]: c for c in r.diagnostic(s)}
+    assert 'Session 301500 bloque d\'autres sessions (ipscron@x0294se)' in t
+    assert 'Une requête représente 100 % des lectures disque tracées' in t
+    assert 'i_a2 couvert par' in t['Index probablement redondants'][3]
+    assert 'i_u couvert' not in t['Index probablement redondants'][3]          # un index unique n'est jamais redondant
+    assert 'Index profonds (5 niveaux ou plus)' in t
+    assert 'zag_ent' in t['Tables en verrouillage par page'][3] or 'zag_ent' in t.get('Tables très sollicitées en verrouillage par page', ('',) * 4)[3]
+    assert 'Contention sur les mutex internes' in t and 'Buffer de log logique vidé à chaque validation' not in t   # pas de validations dans le profil de test
+    sortie = str(tmp_path / 'r.html')
+    r.generer([s], sortie)
+    h = open(sortie, encoding='utf-8').read()
+    assert 'Analyse experte Informix' in h and 'Vitesse des chunks' in h and 'Chaînes de blocage' in h and 'Requêtes SQL tracées' in h

@@ -53,6 +53,11 @@ L'environnement Informix est lu dans le profil du compte `informix` (`ONCONFIG=o
 | `onstat -g ppf` + `sysptprof` + `syssesprof` (export unload) | 15 min et en fin d'audit | **compteurs par table et par index** : lectures physiques et logiques, lectures ISAM, scans séquentiels, **parcours inverses**, verrous, hit ratio ; **compteurs par session** (utilisateur, poste, PID). Le rapport calcule le cumul depuis le démarrage et le delta sur la fenêtre |
 | Inventaire SQL (une fois) | | **remplissage des dbspaces**, taille et nombre d'extents des plus grosses tables, **date des dernières statistiques** (`systables.ustlowts`, `sysdistrib`) de chaque base, rattachement index → table |
 | Ouverture des chunks (une fois) | | drapeaux d'ouverture des chunks par les processus `oninit` : **DIRECT_IO réellement actif ou non** (`O_DIRECT`) |
+| `onstat -g spi`, `-g ioq`, `-g buf`, `-l` | 5 min | **mode expert** : contention sur les mutex internes (avec interprétation), files d'attente d'I/O AIO/KAIO, écritures premier plan / LRU / chunk par pool, efficacité des buffers de log (pages par écriture), remplissage du log physique ; `-g iof` donne la **vitesse de chaque chunk par intervalle** (Mo/s, IOPS, ms) |
+| `syslocks` + `syssessions` | quand ≥ 2 sessions attendent un verrou (au plus toutes les 2 min) | **chaînes de blocage** : session bloquante (utilisateur, poste, PID), tables, sessions bloquées |
+| `onstat -d`, `sysscblst` | 15 min | occupation des **dbspaces temporaires**, mémoire des sessions |
+| Catalogue de chaque base (une fois) | | verrouillage par page / ligne des tables, taille de ligne, **structure des index** (niveaux, feuilles, colonnes) → tables sans index, index redondants, index profonds ; mode de journalisation des bases ; paramètres **modifiés à chaud** (`onstat -g cfg` comparé à l'ONCONFIG) |
+| **Trace SQL** (option `--trace-sql`) | 5 min | `sysadmin:task('set sql tracing on', 3000, '4k', 'low', 'global')` pendant l'audit sur la base principale, **désactivée à la fin** (sauf si SQLTRACE était déjà actif). Top des requêtes **par lectures disque, lectures mémoire, durée, attentes de verrou, exécutions**, avec isolation et texte normalisé : relie les objets coûteux aux requêtes. Seule option qui modifie l'état du moteur (mémoire de trace) |
 | Une fois, au démarrage | | `onstat -g seg`, `-g osi`, `-d`, `-D`, `-R`, `-g buf`, `-g ntt`, `-g mgm`, `-g lmx`, `-s`, `-g cluster`, `-c` ; **ONCONFIG complet** ; sqlhosts ; chunks → périphériques ; journal du moteur (MSGPATH) |
 
 **Impact sur la production : négligeable.** Les `onstat` lisent la mémoire partagée sans verrou. Les requêtes SQL ne lisent que sysmaster et le catalogue (`SET ISOLATION TO DIRTY READ`, délai limité). Aucune commande lourde n'est lancée (ni `oncheck`, ni `UPDATE STATISTICS`, ni trace SQL), et rien n'est modifié. `--sans-sql` désactive toutes les requêtes. Chaque commande a un délai maximal.
@@ -77,6 +82,7 @@ cd /partage/audit-scania
 ./audit-irium.sh campagne demarrer scania-22oct --serveurs "x0296se x0297se x0290se x0294se x0295se" \
     --debut 07:30 --duree 5h --intervalle 30 --bdd-hote x0296se --bdd-port sqlexec
 ```
+- Ajouter `--trace-sql` pour obtenir le top des requêtes SQL (recommandé pour la campagne sur la base principale).
 - Ajouter `--services 'digital_dealer|nom2|nom3'` pour superviser d'autres services ou processus : le motif est cherché dans la ligne de commande (`ps -ef`).
 - Chaque serveur démarre sa collecte en arrière-plan, qui **continue après la déconnexion SSH**. Le rôle de chaque serveur est détecté automatiquement. La latence vers la base n'est mesurée que depuis les autres serveurs.
 - Si un serveur n'est pas joignable en SSH, la commande à y lancer est affichée : `./audit-irium.sh campagne rejoindre scania-22oct`.
@@ -165,6 +171,12 @@ Repères utilisés par le diagnostic :
 | Statistiques de l'optimiseur | < 30 jours | absentes ou anciennes sur une table en tête des classements |
 | Pression mémoire du noyau | 0 | compactages > 1/s, allocations bloquantes > 10/s, ou aucun bloc libre > 16 Ko |
 | Service supervisé | présent en continu | absent ou redémarré pendant l'audit ; CPU p95 ≥ 80 % d'un cœur ; mémoire en hausse continue |
+| Chunk : temps de réponse par intervalle | < 5 ms | p95 > 15 ms : stockage saturé aux heures de pointe |
+| File d'I/O du moteur | 0 à 1 | ≥ 4 requêtes en attente (≥ 10 : saturation) |
+| Mutex internes | quelques attentes | ≥ 500 attentes/min sur un mutex (lockhash, lrus, logbuf…) |
+| Buffer de log logique | plusieurs pages par écriture | < 1,5 page par écriture avec > 20 validations/s : chaque COMMIT attend le disque |
+| Session bloquante | aucune | une session bloque ≥ 2 sessions ou sur plusieurs relevés |
+| Requête SQL (trace) | coût réparti | une requête ≥ 20 % des lectures disque, du temps ou des attentes de verrou ; ≥ 1 000 exécutions et 20 % du total : boucle |
 | Programme pendant les pics | présence comparable | présent dans ≥ 30 % des pics et au moins 1,5 fois plus souvent que le reste du temps |
 
 ## Causes fréquentes sur ce type d'architecture
