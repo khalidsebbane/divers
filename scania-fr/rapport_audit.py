@@ -33,6 +33,7 @@ import tarfile
 import tempfile
 
 PY2 = sys.version_info[0] < 3
+TAILLE_MAX_FICHIER = 200 * 1024 * 1024   # un relevé brut plus gros est anormal (ex. onstat -g spi non agrégé des anciennes versions)
 if PY2:   # RHEL 7 : python 2.7 seul
     str = unicode  # noqa: F821
 
@@ -49,6 +50,9 @@ def blocs(chemin):
     """Découpe un fichier « ### epoch date » en [(datetime, texte)]."""
     res = []
     if not os.path.exists(chemin):
+        return res
+    if os.path.getsize(chemin) > TAILLE_MAX_FICHIER:
+        print('Ignoré (fichier de %d Mo) : %s' % (os.path.getsize(chemin) // 1048576, chemin), file=sys.stderr)
         return res
     with io.open(chemin, encoding='utf-8', errors='replace') as f:
         ts, buf = None, []
@@ -2747,6 +2751,10 @@ def ouvrir_source(chemin, tmp):
     if chemin.endswith('.tar.gz') or chemin.endswith('.tgz'):
         with tarfile.open(chemin) as t:
             membres = [m for m in t.getmembers() if not (m.name.startswith('/') or '..' in m.name) and (m.isfile() or m.isdir())]
+            for m in membres:
+                if m.isfile() and m.size > TAILLE_MAX_FICHIER:
+                    print('Ignoré (fichier de %d Mo) : %s' % (m.size // 1048576, m.name), file=sys.stderr)
+            membres = [m for m in membres if not (m.isfile() and m.size > TAILLE_MAX_FICHIER)]
             t.extractall(tmp, members=membres)
         racines = {m.name.split('/')[0] for m in membres}
         return os.path.join(tmp, sorted(racines)[0])
@@ -2763,7 +2771,14 @@ def main():
     p.add_argument('-o', '--sortie', help='fichier HTML (défaut : dossier de rapport_audit.py)',
                    default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'rapport_audit_irium_%s.html' % dt.datetime.now().strftime('%Y%m%d_%H%M')))
     a = p.parse_args()
-    tmp = tempfile.mkdtemp(prefix='audit_irium_')
+    if os.path.isdir(a.sortie):   # -o <dossier> : nom de fichier par défaut dans ce dossier
+        a.sortie = os.path.join(a.sortie, 'rapport_audit_irium_%s.html' % dt.datetime.now().strftime('%Y%m%d_%H%M'))
+    # archives décompressées à côté du rapport (souvent sur le partage) plutôt que dans /tmp, souvent petit
+    base_tmp = os.path.dirname(os.path.abspath(a.sortie))
+    try:
+        tmp = tempfile.mkdtemp(prefix='.audit_irium_tmp_', dir=base_tmp)
+    except (IOError, OSError):
+        tmp = tempfile.mkdtemp(prefix='audit_irium_')
     try:
         serveurs, campagne = [], None
         for src in a.sources:
