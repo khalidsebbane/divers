@@ -23,7 +23,8 @@
 #   ./audit-irium.sh supervision --duree 4h [--intervalle 30] [--debut 07:30] [--bdd-hote ...] [--bdd-port ...]
 #   ./audit-irium.sh statut | arreter
 #
-# Options communes : [--partage DIR] (défaut : dossier du script)  [--sortie /var/tmp/scania-fr] (travail local)
+# Options communes : [--partage DIR] (défaut : dossier du script)
+#   [--sortie DIR] (défaut : <dossier du script>/resultats/<serveur>, ou /var/tmp/scania-fr si non accessible ; en campagne : /var/tmp)
 #   [--base magix_prod]  [--motifs 'ipscrond|fglrun|...']  [--services 'digital_dealer|autre_service']  [--table-programmes agr_lds]  [--sans-sql]  [--sans-rapport]
 #   [--informixdir DIR --informixserver NOM --onconfig FICHIER]
 #   [--trace-sql]  trace SQL du moteur (sysadmin task) pendant l'audit sur la base principale, coupée à la fin :
@@ -34,7 +35,7 @@
 set -uo pipefail
 export LC_ALL=C LANG=C
 
-SORTIE=/var/tmp/scania-fr
+SORTIE=""   # défaut : <dossier du script>/resultats/<serveur>, sinon /var/tmp/scania-fr
 DUREE=4h
 INTERVALLE=30
 DEBUT=""
@@ -53,7 +54,7 @@ BASE=magix_prod   # base(s) IRIUM analysée(s) (séparées par des virgules) ; d
 SERVICES='digital_dealer'   # services / processus applicatifs à superviser (expression régulière, alternatives séparées par |)
 INFORMIXDIR_OPT="" INFORMIXSERVER_OPT="" ONCONFIG_OPT=""
 HOTE="${AUDIT_HOTE:-$(hostname -s 2>/dev/null || hostname)}"   # AUDIT_HOTE : tests uniquement
-EN_COURS_LIEN="$SORTIE/en-cours"
+EN_COURS_LIEN=""
 
 # ---------------------------------------------------------------------------------------------
 journal() { echo "$(date '+%F %T') $*" | tee -a "${DOSSIER:-/tmp}/journal.txt" >&2; }
@@ -187,6 +188,7 @@ statique_informix() {
   local msg; msg="$(chemin_msgpath)"
   [ -f "$msg" ] && tail -n 20000 "$msg" > "$d/online_log.txt"
   ouverture_chunks
+  releve_spi
   inventaire_sql
   programmes_init
   trace_sql_demarrer
@@ -219,7 +221,7 @@ trace_sql_demarrer() {
   elif timeout 60 dbaccess sysadmin - >> "$DOSSIER/informix/inventaire/erreurs_sql.txt" 2>&1 <<'EOSQL'
 EXECUTE FUNCTION task('set sql tracing on', 3000, '4k', 'low', 'global');
 EOSQL
-  then TRACE_ACTIVEE=1; journal "Trace SQL activée pour la durée de l'audit (3000 requêtes en mémoire, niveau low)"
+  then TRACE_ACTIVEE=1; trap 'trace_sql_arreter' EXIT; journal "Trace SQL activée pour la durée de l'audit (3000 requêtes en mémoire, niveau low)"
   else journal "Activation de la trace SQL impossible (voir informix/inventaire/erreurs_sql.txt)"; TRACE_SQL=0; return 0; fi
   unl sysmaster "$DOSSIER/informix/trace_sql_colonnes.unl" "SELECT TRIM(c.colname) FROM syscolumns c, systables t WHERE c.tabid = t.tabid AND t.tabname = 'syssqltrace' ORDER BY c.colno"
 }
@@ -290,6 +292,19 @@ ouverture_chunks() {
       echo "$cible|$pid|$fl|$(( (8#${fl:-0} & 8#40000) ? 1 : 0 ))|$([ -b "$cible" ] && echo brut || echo fichier)" >> "$f"
     done
   done
+}
+
+# Contention sur les mutex : onstat -g spi liste un mutex par buffer (des millions de lignes sur un gros BUFFERPOOL) :
+# agrégé à la volée par nom (indices et adresses retirés), 100 premiers, et relevé seulement au début et à la fin
+releve_spi() {
+  [ "$IFX" -eq 1 ] || return 0
+  { horodatage
+    timeout 120 nice -n 19 onstat -g spi 2>/dev/null | awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && NF >= 4 {
+        w = $1; l = $2; $1 = $2 = $3 = ""; n = $0
+        gsub(/\[[^]]*\]/, "", n); gsub(/0x[0-9a-fA-F]+/, "", n); gsub(/[0-9]+/, "#", n); gsub(/^ +| +$/, "", n)
+        W[n] += w; L[n] += l }
+      END { for (n in W) printf "%d %d %.2f %s\n", W[n], L[n], (W[n] ? L[n] / W[n] : 0), n }' | sort -nr | head -100
+    echo; } >> "$DOSSIER/informix/onstat_spi.raw"
 }
 
 # Exécute une requête SQL en lecture seule et écrit le résultat au format unload (séparateur |)
@@ -433,7 +448,6 @@ echantillon_informix_lent() {   # toutes les 5 minutes
   brut "$i/onstat_dri.raw" onstat -g dri
   brut "$i/onstat_x.raw" onstat -x
   brut "$i/onstat_wai.raw" onstat -g wai
-  brut "$i/onstat_spi.raw" onstat -g spi
   brut "$i/onstat_ioq.raw" onstat -g ioq
   brut "$i/onstat_buf.raw" onstat -g buf
   programmes_releve
@@ -527,6 +541,18 @@ echantillon_services() {
       [ $# -ge 22 ] || continue
       echo "$pid|${2:-}|${1:-}|${12:-0}|${13:-0}|${18:-0}|${20:-0}|${22:-0}|${cmd% }"
     done; } >> "$DOSSIER/series/services.raw"
+}
+
+# Protection de l'espace disque : la collecte s'arrête proprement s'il reste moins de 1 Go ou si le disque est plein à plus de 95 %
+espace_suffisant() {
+  local l; l="$(df -Pk "$DOSSIER" 2>/dev/null | awk 'NR == 2 {sub("%", "", $5); print $4, $5}')"
+  [ -n "$l" ] || return 0
+  set -- $l
+  if [ "$1" -lt 1048576 ] || [ "$2" -gt 95 ]; then
+    echo "$(date '+%F %T') ARRÊT : espace disque insuffisant sur $(df -P "$DOSSIER" | awk 'NR==2{print $6}') ($(( $1 / 1024 )) Mo libres, $2 %)" >> "$DOSSIER/journal.txt" 2>/dev/null
+    echo "ARRÊT : espace disque insuffisant pour $DOSSIER" >&2
+    return 1
+  fi
 }
 
 # Rapport HTML (diagnostic + recommandations) généré automatiquement à la fin de l'audit
@@ -626,6 +652,7 @@ cmd_campagne() {
   local sous="${1:-}"; shift || true
   [ -n "${1:-}" ] && [[ "$1" != --* ]] && [ "$sous" != marquer ] && { CAMPAGNE="$1"; shift; }
   analyser_options "$@"
+  resoudre_sortie
   [ "$sous" = marquer ] && { [ -n "$CAMPAGNE" ] || CAMPAGNE="$(derniere_campagne)"; cmd_marquer "${RESTE[@]:-}"; return; }
   case "$sous" in
     demarrer) [ -n "$CAMPAGNE" ] || CAMPAGNE="$(date +%Y%m%d)" ;;
@@ -691,16 +718,19 @@ cmd_campagne() {
     arreter)
       touch "$c/ARRET" && echo "Arrêt demandé : chaque serveur termine son relevé en cours, synchronise ses données puis le rapport central est produit."
       ;;
-    *) sed -n '3,31p' "$SCRIPT"; exit 1 ;;
+    *) sed -n '3,33p' "$SCRIPT"; exit 1 ;;
   esac
 }
 
 cmd_instantane() {
   preparer
   journal "Collecte de la configuration système..."; statique_systeme
+  espace_suffisant || { terminer; exit 1; }
   journal "Collecte Informix..."; statique_informix
   journal "Échantillons (3 x $INTERVALLE s)..."
+  trap 'journal "Arrêt demandé"; terminer; exit 0' TERM INT
   for n in 1 2 3; do
+    espace_suffisant || break
     echantillon_systeme; echantillon_services; echantillon_informix; echantillon_latence
     [ $n -eq 1 ] && { echantillon_processus; echantillon_informix_lent; echantillon_informix_lourd; }
     [ $n -lt 3 ] && sleep "$INTERVALLE"
@@ -708,6 +738,7 @@ cmd_instantane() {
   echantillon_informix_lent
   profils_objets
   programmes_final
+  releve_spi
   terminer
 }
 
@@ -719,6 +750,7 @@ boucle_supervision() {
   trap 'journal "Arrêt demandé"; terminer; exit 0' TERM INT
   while [ "$(date +%s)" -lt "$fin" ]; do
     arret_campagne_demande && { journal "Arrêt de la campagne demandé"; break; }
+    espace_suffisant || break
     local t0; t0=$(date +%s)
     echantillon_systeme
     echantillon_services
@@ -736,6 +768,7 @@ boucle_supervision() {
   echantillon_informix_lent
   profils_objets
   programmes_final
+  releve_spi
   terminer
 }
 
@@ -822,7 +855,7 @@ while [ $# -gt 0 ]; do
     --partage) PARTAGE="$(readlink -f "$2")"; shift 2;; --campagne) CAMPAGNE="$2"; shift 2;; --serveurs) SERVEURS="${2//,/ }"; shift 2;;
     --table-programmes) PROG_TABLE="$2"; shift 2;;
     --duree) DUREE="$2"; shift 2;; --intervalle) INTERVALLE="$2"; shift 2;; --debut) DEBUT="$2"; shift 2;;
-    --sortie) SORTIE="$2"; EN_COURS_LIEN="$SORTIE/en-cours"; shift 2;;
+    --sortie) SORTIE="$2"; shift 2;;
     --bdd-hote) BDD_HOTE="$2"; shift 2;; --bdd-port) BDD_PORT="$2"; shift 2;; --motifs) MOTIFS="$2"; shift 2;; --services) SERVICES="$2"; shift 2;; --base) BASE="$2"; shift 2;;
     --role) ROLE="$2"; shift 2;; --sans-sql) AVEC_SQL=0; shift;; --trace-sql) TRACE_SQL=1; shift;; --sans-rapport) RAPPORT=0; shift;;
     --informixdir) INFORMIXDIR_OPT="$2"; shift 2;; --informixserver) INFORMIXSERVER_OPT="$2"; shift 2;; --onconfig) ONCONFIG_OPT="$2"; shift 2;;
@@ -831,8 +864,26 @@ while [ $# -gt 0 ]; do
   esac
 done
 }
+# Dossier de travail : sur le partage à côté du script (un sous-dossier par serveur), sinon /var/tmp si non accessible.
+# En campagne, la collecte reste locale (/var/tmp) et est copiée sur le partage toutes les 5 minutes.
+resoudre_sortie() {
+  if [ -z "$SORTIE" ]; then
+    local c="$PARTAGE/resultats/$HOTE"
+    if [ -z "$CAMPAGNE" ] && [ "$ACTION" != campagne ] && mkdir -p "$c" 2>/dev/null && touch "$c/.test" 2>/dev/null; then
+      rm -f "$c/.test"; SORTIE="$c"
+    else
+      SORTIE=/var/tmp/scania-fr
+    fi
+  fi
+  # statut / arreter / marquer : retrouver une supervision lancée par une campagne (travail dans /var/tmp)
+  if [[ "$ACTION" =~ ^(statut|arreter|marquer)$ ]] && [ ! -f "$SORTIE/supervision.pid" ] && [ -f /var/tmp/scania-fr/supervision.pid ]; then
+    SORTIE=/var/tmp/scania-fr
+  fi
+  EN_COURS_LIEN="$SORTIE/en-cours"
+}
 if [ "$ACTION" = campagne ]; then cmd_campagne "$@"; exit $?; fi
 analyser_options "$@"
+resoudre_sortie
 case "$ACTION" in
   instantane) cmd_instantane ;;
   supervision) cmd_supervision ;;
@@ -840,5 +891,5 @@ case "$ACTION" in
   statut) cmd_statut ;;
   arreter) cmd_arreter ;;
   _executer) executer_supervision ;;  # interne
-  *) sed -n '3,31p' "$0"; exit 1 ;;
+  *) sed -n '3,33p' "$0"; exit 1 ;;
 esac

@@ -119,6 +119,13 @@ Contenu du partage :
 ```
 Une archive `.tar.gz` de chaque serveur est aussi conservée localement dans `/var/tmp/scania-fr`. **Volume** : 5 à 20 Mo par serveur pour une matinée.
 
+### Où sont les résultats, et protection du disque
+
+- **Mode autonome** (`instantane`, `supervision`) : `<dossier du script>/resultats/<serveur>/`, par exemple `/msdos/ks/scania-fr/resultats/x0296se/`, avec le rapport HTML et l'archive. Si ce dossier n'est pas accessible en écriture, le script utilise `/var/tmp/scania-fr`. `--sortie DIR` impose un autre dossier.
+- **Campagne** : collecte locale dans `/var/tmp/scania-fr`, copiée toutes les 5 minutes dans `<partage>/campagnes/<nom>/<serveur>/`.
+- **Protection** : la collecte s'arrête proprement, avec un message dans le journal, s'il reste moins de **1 Go** ou si le disque est plein à plus de **95 %**. Un audit complet d'une matinée fait 5 à 20 Mo par serveur.
+- `onstat -g spi` est relevé seulement au début et à la fin, et agrégé à la volée. Sur un gros BUFFERPOOL, il liste un mutex par buffer, soit des millions de lignes.
+
 ### Mode autonome (un seul serveur, sans partage)
 
 `./audit-irium.sh supervision --duree 4h [--debut 07:30]`, puis `statut` / `marquer` / `arreter`. Le rapport du serveur est généré en fin d'audit dans son dossier local. Plusieurs archives peuvent ensuite être consolidées avec `python3 rapport_audit.py a.tar.gz b.tar.gz -o rapport.html`.
