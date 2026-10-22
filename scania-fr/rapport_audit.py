@@ -1080,6 +1080,133 @@ def programmes_autour(serveurs, quand, minutes=5):
 
 
 # --------------------------------------------------------------------------------------------
+# Services / processus applicatifs supervisés (ex. digital_dealer) et services systemd
+# --------------------------------------------------------------------------------------------
+def serie_services(d, info):
+    motifs = [m for m in (info.get('services') or '').split('|') if m.strip()]
+    b = blocs(os.path.join(d, 'series', 'services.raw'))
+    if not motifs or not b:
+        return {}
+    clk = float(info.get('clk_tck') or 100)
+    page_ko = float(info.get('page_ko') or 4)
+    groupe = lambda cmd: next((m for m in motifs if re.search(m, cmd)), None)
+    res = dict((m, {'serie': [], 'pids': {}, 'cmds': {}, 'demarrages': [], 'absences': []}) for m in motifs)
+    prec = {}
+    for ts, t in b:
+        cour = {}
+        for l in t.splitlines():
+            p = l.split('|', 8)
+            if len(p) < 9 or not p[0].isdigit():
+                continue
+            g = groupe(p[8])
+            if g is None:
+                continue
+            cle = (p[0], p[6])   # pid + date de démarrage : un pid réutilisé n'est pas confondu
+            cour[cle] = {'g': g, 'ticks': (entier(p[3]) or 0) + (entier(p[4]) or 0), 'threads': int(entier(p[5]) or 0),
+                         'rss_mo': (entier(p[7]) or 0) * page_ko / 1024.0, 'etat': p[2], 'cmd': p[8]}
+            res[g]['cmds'][p[8][:160]] = res[g]['cmds'].get(p[8][:160], 0) + 1
+            if cle not in res[g]['pids']:
+                res[g]['pids'][cle] = ts
+        for g in motifs:
+            mes = [v for v in cour.values() if v['g'] == g]
+            e = {'ts': ts, 'n': len(mes), 'rss_mo': sum(v['rss_mo'] for v in mes), 'threads': sum(v['threads'] for v in mes),
+                 'etat_D': sum(1 for v in mes if v['etat'] == 'D')}
+            if prec.get('ts'):
+                el = (ts - prec['ts']).total_seconds() or 1
+                e['cpu'] = 100.0 * sum(v['ticks'] - prec['p'][k]['ticks'] for k, v in cour.items() if v['g'] == g and k in prec['p']) / clk / el
+            res[g]['serie'].append(e)
+        prec = {'ts': ts, 'p': cour}
+    debut = b[0][0]
+    for g, r in res.items():
+        r['demarrages'] = sorted(t for t in r['pids'].values() if t > debut)
+        cour = None
+        for e in r['serie']:
+            if e['n'] == 0 and cour is None:
+                cour = e['ts']
+            elif e['n'] > 0 and cour is not None:
+                r['absences'].append((cour, e['ts']))
+                cour = None
+        if cour is not None:
+            r['absences'].append((cour, r['serie'][-1]['ts']))
+    return res
+
+
+def services_echec(d):
+    res = {}
+    for moment in ('debut', 'fin'):
+        t = lire(os.path.join(d, 'statique', 'services_echec_%s.txt' % moment))
+        res[moment] = [l.split()[0] for l in t.splitlines() if l.strip() and ' failed ' in ' %s ' % l and '.service' in l]
+    return res
+
+
+def regles_services(s):
+    r = []
+    for g, x in sorted((s.get('services') or {}).items()):
+        if not x['serie']:
+            continue
+        nom = g.replace('\\', '')
+        jamais = all(e['n'] == 0 for e in x['serie'])
+        if jamais:
+            r.append(('haute', 'Services', 'Service %s absent pendant tout l\'audit' % nom, 'aucun processus correspondant au motif « %s »' % g,
+                      'Vérifier que le service doit bien tourner sur ce serveur ; sinon le retirer de --services.'))
+            continue
+        if x['absences']:
+            r.append(('haute', 'Services', 'Service %s arrêté pendant l\'audit' % nom,
+                      'absent : %s' % ', '.join('%s → %s' % (a.strftime('%H:%M'), z.strftime('%H:%M')) for a, z in x['absences'][:6]),
+                      'Consulter les journaux du service et du système à ces heures (journalctl, /var/log/messages) ; vérifier la supervision et le redémarrage automatique.'))
+        if x['demarrages']:
+            r.append(('moyenne', 'Services', 'Processus %s (re)démarrés pendant l\'audit' % nom,
+                      '%d démarrage(s) : %s' % (len(x['demarrages']), ', '.join(t.strftime('%H:%M:%S') for t in x['demarrages'][:8])),
+                      'Un service qui redémarre en boucle (plantage, script de relance) consomme et coupe ses traitements : lire son journal d\'erreurs.'))
+        cpu = stats([e.get('cpu') for e in x['serie']])
+        if (cpu['p95'] or 0) >= 80:
+            r.append(('moyenne' if cpu['p95'] < 150 else 'haute', 'Services', 'Service %s gros consommateur de CPU' % nom,
+                      'CPU p95 %.0f %% d\'un cœur (moyenne %.0f %%, max %.0f %%) sur %d CPU' % (cpu['p95'], cpu['moy'], cpu['max'], s['ncpu']),
+                      'Sur le serveur de base, ce service prend du temps CPU aux VP Informix : envisager son déplacement sur un serveur d\'applications ou une limite (cgroup / systemd CPUQuota).'))
+        mem = [e['rss_mo'] for e in x['serie'] if e['n']]
+        if len(mem) >= 6 and mem[-1] > 200 and mem[-1] > 1.5 * min(mem[:max(1, len(mem) // 5)]):
+            r.append(('info', 'Services', 'Mémoire du service %s en hausse continue' % nom, 'RSS %.0f Mo au début → %.0f Mo à la fin' % (mem[0], mem[-1]),
+                      'Fuite mémoire possible : surveiller sur plusieurs jours, redémarrage planifié en attendant une correction.'))
+        if sum(e['etat_D'] for e in x['serie']) > len(x['serie']) / 2:
+            r.append(('info', 'Services', 'Service %s souvent en attente d\'I/O (état D)' % nom, '%d relevés' % sum(1 for e in x['serie'] if e['etat_D']),
+                      'Le service attend le disque ou un montage réseau (NFS) : vérifier ses fichiers de travail.'))
+    ech = s.get('svc_echec') or {}
+    tous = sorted(set(ech.get('debut', [])) | set(ech.get('fin', [])))
+    if tous:
+        nouveaux = sorted(set(ech.get('fin', [])) - set(ech.get('debut', [])))
+        r.append(('moyenne' if nouveaux else 'info', 'Services', 'Services systemd en échec', ', '.join(tous[:10]) + (' ; en échec pendant l\'audit : %s' % ', '.join(nouveaux) if nouveaux else ''),
+                  'systemctl status <service> et journalctl -u <service> : corriger ou désactiver les services inutiles.'))
+    return r
+
+
+def section_services(s, t0, t1, marq):
+    sv = s.get('services') or {}
+    o = []
+    if sv:
+        lignes = []
+        for g, x in sorted(sv.items()):
+            cpu = stats([e.get('cpu') for e in x['serie']])
+            n = stats([e['n'] for e in x['serie']])
+            etat = 'absent' if all(e['n'] == 0 for e in x['serie']) else ('<b style="color:#d03b3b">arrêté %d fois</b>' % len(x['absences']) if x['absences'] else 'présent en continu')
+            lignes.append(['<b>%s</b>' % esc(g), etat, '%s-%s' % (fmt(n['min']), fmt(n['max'])), str(len(x['demarrages'])), fmt(cpu['moy']), fmt(cpu['max']),
+                           fmt(stats([e['rss_mo'] for e in x['serie']])['max']), fmt(stats([e['threads'] for e in x['serie']])['max']),
+                           '<span class="mono">%s</span>' % '<br>'.join(esc(c) for c, _n in sorted(x['cmds'].items(), key=lambda kv: -kv[1])[:4])])
+        o.append('<h3>Services supervisés</h3>' + tableau(['Service', 'État', 'Processus', '(Re)démarrages', 'CPU moyen % (1 cœur = 100)', 'CPU max %', 'Mémoire max Mo',
+                                                           'Threads max', 'Commandes'], lignes))
+        o.append('<div class="g">%s%s</div>' % (
+            courbe('Services : CPU (% d\'un cœur)', [(g, COULEURS[i % len(COULEURS)], x['serie'], 'cpu') for i, (g, x) in enumerate(sorted(sv.items()))], t0, t1, marq, ' %'),
+            courbe('Services : mémoire (Mo)', [(g, COULEURS[i % len(COULEURS)], x['serie'], 'rss_mo') for i, (g, x) in enumerate(sorted(sv.items()))], t0, t1, marq, ' Mo')))
+    stx = os.path.join(s['dossier'], 'statique')
+    actifs = [l.split()[0] for l in lire(os.path.join(stx, 'services_systemd_debut.txt')).splitlines() if ' running ' in ' %s ' % l]
+    if actifs:
+        o.append('<details><summary>Services systemd actifs au début de l\'audit (%d)</summary><pre>%s</pre></details>' % (len(actifs), esc('\n'.join(actifs))))
+    ports = lire(os.path.join(stx, 'ports_ecoute_debut.txt'))
+    if ports.strip():
+        o.append('<details><summary>Ports en écoute</summary><pre>%s</pre></details>' % esc(ports[:30000]))
+    return ''.join(o)
+
+
+# --------------------------------------------------------------------------------------------
 # Chargement d'un serveur
 # --------------------------------------------------------------------------------------------
 def charger(d):
@@ -1091,6 +1218,7 @@ def charger(d):
     s['irium'], s['jobs'] = serie_irium(d)
     s['top'], s['etat_d'] = top_processus(d), etat_d(d)
     s['buddy'] = serie_buddy(d)
+    s['services'], s['svc_echec'] = serie_services(d, info), services_echec(d)
     tous = [e['ts'] for e in s['cpu']] or [dt.datetime.now()]
     s['debut'], s['fin'] = min(tous), max(tous)
     s['marqueurs'] = []
@@ -1238,6 +1366,8 @@ def diagnostic(s):
         add('moyenne', 'Disques', 'Processus bloqués en attente d\'I/O (état D)',
             ', '.join('%s (%s) ×%d' % (k[0], k[1], n) for k, n in s['etat_d'][:4]), 'Confirme une attente du stockage ou d\'un montage réseau (NFS).')
 
+    for x in regles_services(s):
+        add(*x)
     if s['informix']:
         p = s['profil']
         cl = stats([e['cache_lect'] for e in p])
@@ -1529,6 +1659,8 @@ def autour(serveurs, quand, minutes=5):
                   ('ping base (ms)', s['latence'], 'ping_ms'), ('traitements ipscrond', s['irium'], 'batch')]
         for dev, serie in list(s['disques'].items())[:6]:
             series.append(('temps disque %s (ms)' % dev, serie, 'await'))
+        for g, x in sorted((s.get('services') or {}).items()):
+            series.append(('CPU service %s (%%)' % g, x['serie'], 'cpu'))
         if s['informix']:
             series += [('attentes verrous/min', s['profil'], 'lockwts_min'), ('sessions en attente verrou', s['sessions'], 'att_L'),
                        ('sessions en attente checkpoint', s['sessions'], 'att_C'), ('cache lecture %', s['profil'], 'cache_lect'),
@@ -1728,6 +1860,7 @@ def section_serveur(s, t0, t1, marq, idx=0):
         o.append('<h3>Processus les plus consommateurs (CPU, cumul des relevés)</h3>' + tableau(
             ['Commande', 'Utilisateur', 'Présence (relevés)', 'CPU moyen %', 'CPU max %', 'Arguments'],
             [[esc(c['cmd']), esc(c['user']), str(c['n']), fmt(sum(c['cpu']) / len(c['cpu'])), fmt(max(c['cpu'])), '<span class="mono">%s</span>' % esc(c['args'])] for c in s['top']]))
+    o.append(section_services(s, t0, t1, marq))
     if s['jobs']:
         o.append('<h3>Traitements ipscrond observés</h3>' + tableau(['Commande', 'Vu de', 'à', 'Relevés', 'CPU max %'],
                                                                 [['<span class="mono">%s</span>' % esc(j['cmd']), j['debut'].strftime('%H:%M:%S'), j['fin'].strftime('%H:%M:%S'), str(j['vu']), fmt(j['cpu_max'])] for j in s['jobs'][:30]]))
@@ -1896,7 +2029,8 @@ def section_objets(s):
 PRIO = {'critique': 'Immédiat', 'haute': 'P1', 'moyenne': 'P2', 'info': 'P3'}
 NATURE = {'CPU': 'Système', 'Disques': 'Système', 'Mémoire': 'Système', 'Système': 'Système', 'Virtualisation': 'Système', 'Réseau': 'Système',
           'Informix': 'Base de données', 'Réplication': 'Base de données', 'Stockage Informix': 'Base de données',
-          'Configuration': 'Configuration Informix (ONCONFIG)', 'Objets': 'Base de données et applicatif', 'Programmes IRIUM': 'Applicatif'}
+          'Configuration': 'Configuration Informix (ONCONFIG)', 'Objets': 'Base de données et applicatif', 'Programmes IRIUM': 'Applicatif',
+          'Services': 'Système et applicatif'}
 
 
 def plan_recommandations(constats):

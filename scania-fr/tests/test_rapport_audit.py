@@ -281,3 +281,42 @@ def test_compatibilite_python27(tmp_path):
     h = open(sortie, encoding='utf-8').read()
     assert 'Dbspace datadbs presque plein' in h and 'Xp_facturation' in h and 'id="reco"' in h
     assert open(str(tmp_path / 'r_inventaire' / '00_plan_recommandations.csv'), 'rb').read(3) == b'\xef\xbb\xbf'
+
+
+def test_services_supervises(tmp_path):
+    d = str(tmp_path / 'srv')
+    fabriquer(d)
+    with open(os.path.join(d, 'info.txt'), 'a') as f:
+        f.write('services=digital_dealer|absent_svc\nclk_tck=100\npage_ko=4\n')
+    lignes = []
+    for i in range(30):
+        if 12 <= i < 15:                                  # arrêt du service entre 12 et 15 min
+            procs = ''
+        else:
+            pid, debut = (7528, 1000) if i < 12 else (8100, 90000)   # redémarré à 15 min (nouveau pid)
+            ticks = i * 6000 * (2 if 10 <= i < 12 else 1)            # 100 % d'un cœur, puis 200 %
+            procs = ('7512|1|S|0|0|1|900|300|/bin/bash /opt/irium/digital_dealer/digital_dealer_start.sh\n'
+                     '%d|7517|R|%d|0|4|%d|%d|python3 digital_dealer.py -l ERROR\n' % (pid, ticks, debut, 50000 + i * 1000))
+        lignes.append(bloc(i * 60, procs))
+    with open(os.path.join(d, 'series', 'services.raw'), 'w') as f:
+        f.write(''.join(lignes))
+    with open(os.path.join(d, 'statique', 'services_echec_fin.txt'), 'w') as f:
+        f.write('kdump.service loaded failed failed Crash recovery kernel arming\n')
+    s = r.charger(d)
+    dd = s['services']['digital_dealer']
+    assert [(a, z) for a, z in dd['absences']] == [(r.dt.datetime.fromtimestamp(T0 + 12 * 60), r.dt.datetime.fromtimestamp(T0 + 15 * 60))]
+    assert len(dd['demarrages']) == 1
+    assert abs(stats_moy(dd['serie'][2:10]) - 100) < 1
+    t = {c[2]: c for c in r.diagnostic(s)}
+    assert 'Service digital_dealer arrêté pendant l\'audit' in t
+    assert 'Processus digital_dealer (re)démarrés pendant l\'audit' in t
+    assert 'Service absent_svc absent pendant tout l\'audit' in t
+    assert 'kdump.service' in t['Services systemd en échec'][3] and t['Services systemd en échec'][0] == 'moyenne'
+    sortie = str(tmp_path / 'r.html')
+    r.generer([s], sortie)
+    assert 'Services supervisés' in open(sortie, encoding='utf-8').read()
+
+
+def stats_moy(serie):
+    v = [e['cpu'] for e in serie if e.get('cpu') is not None]
+    return sum(v) / len(v)

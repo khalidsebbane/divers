@@ -35,6 +35,7 @@ L'environnement Informix est lu dans le profil du compte `informix` (`ONCONFIG=o
 | **Réseau** | erreurs d'interface, vitesse et duplex, connexions par port, **retransmissions TCP** ; depuis les serveurs d'applications et ipscrond : **latence (ping et connexion TCP) vers la base** |
 | **Informix** | voir le tableau ci-dessous |
 | **IRIUM / ipscrond** | nombre de processus IRIUM, **traitements ipscrond en cours** (commande, durée, CPU) pour les relier aux pics de la base |
+| **Services supervisés** | processus des services applicatifs (`--services 'digital_dealer|autre'`, `digital_dealer` par défaut), **à chaque relevé** : présence, arrêts, (re)démarrages, CPU réel (% d'un cœur), mémoire, threads, attente d'I/O. Services systemd actifs et **en échec** et ports en écoute, au début et à la fin |
 | **Programmes IRIUM (base)** | journal applicatif `agr_lds` sur la base principale : programmes lancés pendant la campagne (et dans l'heure précédente), avec utilisateur, poste, début et fin. Relevé toutes les 5 min, puis relu en fin de campagne pour les dates de fin. Table modifiable avec `--table-programmes` |
 | **Pression mémoire du noyau** | compactages et allocations bloquantes, recyclage du cache de pages (Mo/s), fragmentation (`/proc/buddyinfo`), `vm.min_free_kbytes`, THP |
 
@@ -76,6 +77,7 @@ cd /partage/audit-scania
 ./audit-irium.sh campagne demarrer scania-22oct --serveurs "x0296se x0297se x0290se x0294se x0295se" \
     --debut 07:30 --duree 5h --intervalle 30 --bdd-hote x0296se --bdd-port sqlexec
 ```
+- Ajouter `--services 'digital_dealer|nom2|nom3'` pour superviser d'autres services ou processus : le motif est cherché dans la ligne de commande (`ps -ef`).
 - Chaque serveur démarre sa collecte en arrière-plan, qui **continue après la déconnexion SSH**. Le rôle de chaque serveur est détecté automatiquement. La latence vers la base n'est mesurée que depuis les autres serveurs.
 - Si un serveur n'est pas joignable en SSH, la commande à y lancer est affichée : `./audit-irium.sh campagne rejoindre scania-22oct`.
 - **Suivi** : `./audit-irium.sh campagne etat` donne, pour chaque serveur, son rôle, son état (en cours, terminé, silencieux), son dernier relevé et son nombre d'échantillons.
@@ -92,7 +94,7 @@ cd /partage/audit-scania
 - **Rapport immédiat** à tout moment, sur données partielles : `./audit-irium.sh campagne rapport`.
 - **Arrêt anticipé** de tous les serveurs : `./audit-irium.sh campagne arreter`.
 - Le plan d'actions et les classements sont aussi exportés en CSV (Excel) dans `rapport_<nom>_inventaire/`.
-- Le rapport fonctionne avec le **Python 2.7 de RHEL 7** (`python`) comme avec Python 3.6+. Si aucun serveur n'a Python, lancer sur le poste de l'auditeur :
+- Le rapport fonctionne avec Python 3.6+, y compris celui des Software Collections de RHEL 7 (`rh-python36`, utilisé automatiquement), ou à défaut avec le **Python 2.7 de RHEL 7** (`python`). Si aucun serveur n'a Python, lancer sur le poste de l'auditeur :
   ```bash
   python3 rapport_audit.py /partage/audit-scania/campagnes/<nom>
   ```
@@ -162,6 +164,7 @@ Repères utilisés par le diagnostic :
 | Index : lectures logiques / lecture ISAM | ≈ 3 | ≥ 2 000 lectures ISAM/s : traitement ligne à ligne (boucle FOREACH) |
 | Statistiques de l'optimiseur | < 30 jours | absentes ou anciennes sur une table en tête des classements |
 | Pression mémoire du noyau | 0 | compactages > 1/s, allocations bloquantes > 10/s, ou aucun bloc libre > 16 Ko |
+| Service supervisé | présent en continu | absent ou redémarré pendant l'audit ; CPU p95 ≥ 80 % d'un cœur ; mémoire en hausse continue |
 | Programme pendant les pics | présence comparable | présent dans ≥ 30 % des pics et au moins 1,5 fois plus souvent que le reste du temps |
 
 ## Causes fréquentes sur ce type d'architecture
