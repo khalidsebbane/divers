@@ -556,6 +556,16 @@ espace_suffisant() {
 }
 
 # Rapport HTML (diagnostic + recommandations) généré automatiquement à la fin de l'audit
+# Copie du rapport (et de son dossier CSV) dans le dossier du script, ex. /msdos/ks/scania-fr/rapport_x0296se_20261022_1653.html
+copier_rapport() {   # copier_rapport <rapport.html> <nom sans extension>
+  local dest; dest="$(dirname "$SCRIPT")"
+  [ "$(dirname "$(readlink -f "$1")")" = "$dest" ] && return 0
+  timeout 120 cp -f "$1" "$dest/$2.html" 2>/dev/null || return 0
+  rm -rf "$dest/$2_inventaire"
+  [ -d "${1%.html}_inventaire" ] && timeout 120 cp -r "${1%.html}_inventaire" "$dest/$2_inventaire" 2>/dev/null
+  journal "Rapport copié : $dest/$2.html"
+}
+
 trouver_python() {   # Python 3.6+ de préférence, sinon le Python 2.7 de RHEL 7
   local py
   local scl
@@ -580,6 +590,7 @@ generer_rapport() {
   py="$(trouver_python)" || { journal "Python 2.7 ou 3.6+ absent : générer le rapport sur un autre poste (rapport_audit.py <archive>)"; return 0; }
   if timeout 600 $py "$r" "$DOSSIER" -o "$DOSSIER/rapport_${HOTE}.html" >> "$DOSSIER/journal.txt" 2>&1; then
     journal "Rapport : $DOSSIER/rapport_${HOTE}.html (recommandations en fin de rapport)"
+    copier_rapport "$DOSSIER/rapport_${HOTE}.html" "rapport_${HOTE}_$(basename "$DOSSIER" | sed "s/^${HOTE}_//")"
   else
     journal "Échec de génération du rapport (voir journal.txt) : relancer rapport_audit.py sur l'archive"
   fi
@@ -640,6 +651,7 @@ rapport_central() {   # rapport_central [final|periodique]
   done
   if timeout 900 nice -n 19 $py "$r" "$c" -o "$sortie" > "$c/.rapport_${HOTE}.log" 2>&1; then
     journal "Rapport central mis à jour : $sortie"
+    copier_rapport "$sortie" "rapport_${CAMPAGNE}"
   else
     journal "Échec du rapport central (voir $c/.rapport_${HOTE}.log)"
   fi
@@ -714,6 +726,7 @@ cmd_campagne() {
     rapport)
       local py; py="$(trouver_python)" || { echo "Python 2.7 ou 3.6+ requis sur ce serveur pour générer le rapport." >&2; exit 1; }
       $py "$PARTAGE/rapport_audit.py" "$c" -o "$c/rapport_${CAMPAGNE}.html"
+      DOSSIER="$c" copier_rapport "$c/rapport_${CAMPAGNE}.html" "rapport_${CAMPAGNE}"
       ;;
     arreter)
       touch "$c/ARRET" && echo "Arrêt demandé : chaque serveur termine son relevé en cours, synchronise ses données puis le rapport central est produit."

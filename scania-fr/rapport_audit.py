@@ -2760,7 +2760,8 @@ def main():
         sys.stderr = codecs.getwriter('utf-8')(sys.stderr)
     p = argparse.ArgumentParser(description='Rapport d\'audit de performance IRIUM / Informix')
     p.add_argument('sources', nargs='+', help='Dossier de campagne (partage), dossiers ou archives .tar.gz produits par audit-irium.sh')
-    p.add_argument('-o', '--sortie', default='rapport_audit_irium_%s.html' % dt.datetime.now().strftime('%Y%m%d_%H%M'))
+    p.add_argument('-o', '--sortie', help='fichier HTML (défaut : dossier de rapport_audit.py)',
+                   default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'rapport_audit_irium_%s.html' % dt.datetime.now().strftime('%Y%m%d_%H%M')))
     a = p.parse_args()
     tmp = tempfile.mkdtemp(prefix='audit_irium_')
     try:

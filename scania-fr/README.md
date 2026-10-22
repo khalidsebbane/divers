@@ -122,6 +122,12 @@ Une archive `.tar.gz` de chaque serveur est aussi conservée localement dans `/v
 ### Où sont les résultats, et protection du disque
 
 - **Mode autonome** (`instantane`, `supervision`) : `<dossier du script>/resultats/<serveur>/`, par exemple `/msdos/ks/scania-fr/resultats/x0296se/`, avec le rapport HTML et l'archive. Si ce dossier n'est pas accessible en écriture, le script utilise `/var/tmp/scania-fr`. `--sortie DIR` impose un autre dossier.
+- **Les rapports sont copiés directement dans le dossier du script** (`/msdos/ks/scania-fr/`) :
+  - `rapport_<serveur>_<date>.html` après un audit autonome ;
+  - `rapport_<campagne>.html` après une campagne ;
+  - `rapport_audit_irium_<date>.html` pour `rapport_audit.py` lancé à la main sans `-o`.
+
+  Chaque rapport est accompagné de son dossier `_inventaire` (CSV).
 - **Campagne** : collecte locale dans `/var/tmp/scania-fr`, copiée toutes les 5 minutes dans `<partage>/campagnes/<nom>/<serveur>/`.
 - **Protection** : la collecte s'arrête proprement, avec un message dans le journal, s'il reste moins de **1 Go** ou si le disque est plein à plus de **95 %**. Un audit complet d'une matinée fait 5 à 20 Mo par serveur.
 - `onstat -g spi` est relevé seulement au début et à la fin, et agrégé à la volée. Sur un gros BUFFERPOOL, il liste un mutex par buffer, soit des millions de lignes.
