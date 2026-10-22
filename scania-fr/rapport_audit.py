@@ -15,15 +15,14 @@ Un rapport unique regroupe tous les serveurs audités (base principale, réplica
     inverses d'index, verrous), sessions, remplissage des dbspaces, fraîcheur des statistiques ;
   - paramètres clés ONCONFIG commentés et croisés avec les mesures ;
   - en fin de rapport, le plan de recommandations priorisé (également exporté en CSV pour Excel).
-Python 3.6+, aucune dépendance (fonctionne avec /usr/libexec/platform-python).
+Python 2.7 ou 3.6+, aucune dépendance : fonctionne avec le python 2.7 de RHEL 7 et /usr/libexec/platform-python (RHEL 8).
 """
-from __future__ import print_function
+from __future__ import division, print_function, unicode_literals
 
 import argparse
 import csv
 import datetime as dt
 import glob
-import html
 import io
 import math
 import os
@@ -32,6 +31,10 @@ import shutil
 import sys
 import tarfile
 import tempfile
+
+PY2 = sys.version_info[0] < 3
+if PY2:   # RHEL 7 : python 2.7 seul
+    str = unicode  # noqa: F821
 
 COULEURS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#6250d6', '#008300', '#e34948']
 GRAV = {'critique': ('#d03b3b', '⬣', 0), 'haute': ('#ec835a', '◆', 1), 'moyenne': ('#fab219', '▲', 2), 'info': ('#7a7a76', 'ℹ', 3)}
@@ -1601,7 +1604,8 @@ def fmt(v):
 
 
 def esc(v):
-    return html.escape('' if v is None else str(v))
+    v = '' if v is None else str(v)
+    return v.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&#x27;')
 
 
 def tableau(entetes, lignes, vide='Aucune donnée.'):
@@ -1933,7 +1937,8 @@ def indicateurs_reference(serveurs):
 
 def exporter_csv(dossier, plan, serveurs):
     """Inventaire au format CSV (séparateur « ; », UTF-8 avec BOM : ouverture directe dans Excel)."""
-    os.makedirs(dossier, exist_ok=True)
+    if not os.path.isdir(dossier):
+        os.makedirs(dossier)
     ecr = lambda nom, ent, lignes: _csv(os.path.join(dossier, nom), ent, lignes)
     ecr('00_plan_recommandations.csv', ['Priorité', 'Réf.', 'Serveur', 'Nature', 'Constat', 'Preuves', 'Action recommandée', 'Responsable', 'Échéance', 'Statut'],
         [[x['prio'], x['ref'], x['serveur'], x['nature'], x['constat'], x['preuve'], x['action'], '', '', 'À faire'] for x in plan])
@@ -1951,11 +1956,18 @@ def exporter_csv(dossier, plan, serveurs):
 
 
 def _csv(chemin, ent, lignes):
+    nettoyer = lambda l: [re.sub(r'<[^>]+>', '', str(x)) for x in l]
+    if PY2:   # le module csv de Python 2 n'écrit que des octets
+        with open(chemin, 'wb') as f:
+            f.write(b'\xef\xbb\xbf')
+            w = csv.writer(f, delimiter=b';')
+            for l in [ent] + list(lignes):
+                w.writerow([x.encode('utf-8') for x in nettoyer(l)])
+        return
     with io.open(chemin, 'w', encoding='utf-8-sig', newline='') as f:
         w = csv.writer(f, delimiter=';')
-        w.writerow(ent)
-        for l in lignes:
-            w.writerow([re.sub(r'<[^>]+>', '', str(x)) for x in l])
+        for l in [ent] + list(lignes):
+            w.writerow(nettoyer(l))
 
 
 def section_recommandations(plan, serveurs, dossier_csv):
@@ -2106,6 +2118,10 @@ def ouvrir_source(chemin, tmp):
 
 
 def main():
+    if PY2 and not getattr(sys.stdout, 'encoding', None) or (PY2 and sys.stdout.encoding.lower() not in ('utf-8', 'utf8')):
+        import codecs
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout)
+        sys.stderr = codecs.getwriter('utf-8')(sys.stderr)
     p = argparse.ArgumentParser(description='Rapport d\'audit de performance IRIUM / Informix')
     p.add_argument('sources', nargs='+', help='Dossier de campagne (partage), dossiers ou archives .tar.gz produits par audit-irium.sh')
     p.add_argument('-o', '--sortie', default='rapport_audit_irium_%s.html' % dt.datetime.now().strftime('%Y%m%d_%H%M'))

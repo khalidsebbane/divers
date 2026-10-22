@@ -422,10 +422,10 @@ terminer() {
 }
 
 # Rapport HTML (diagnostic + recommandations) généré automatiquement à la fin de l'audit
-trouver_python() {   # Python 3.6+ requis (RHEL 7 : souvent Python 2.7 seul)
+trouver_python() {   # Python 3.6+ de préférence, sinon le Python 2.7 de RHEL 7
   local py
-  for py in /usr/libexec/platform-python python3 python3.6 python; do
-    existe "$py" && "$py" -c 'import sys; sys.exit(sys.version_info < (3, 6))' 2>/dev/null && { echo "$py"; return 0; }
+  for py in /usr/libexec/platform-python python3 python3.6 python python2 python2.7; do
+    existe "$py" && "$py" -c 'import sys; v = sys.version_info; sys.exit(not (v >= (3, 6) or (2, 7) <= v < (3,)))' 2>/dev/null && { echo "$py"; return 0; }
   done
   return 1
 }
@@ -434,7 +434,7 @@ generer_rapport() {
   [ "$RAPPORT" -eq 1 ] || return 0
   local py r; r="$(dirname "$SCRIPT")/rapport_audit.py"
   [ -f "$r" ] || { journal "rapport_audit.py absent à côté du script : rapport non généré"; return 0; }
-  py="$(trouver_python)" || { journal "Python 3.6+ absent : générer le rapport sur un autre poste (rapport_audit.py <archive>)"; return 0; }
+  py="$(trouver_python)" || { journal "Python 2.7 ou 3.6+ absent : générer le rapport sur un autre poste (rapport_audit.py <archive>)"; return 0; }
   if timeout 600 "$py" "$r" "$DOSSIER" -o "$DOSSIER/rapport_${HOTE}.html" >> "$DOSSIER/journal.txt" 2>&1; then
     journal "Rapport : $DOSSIER/rapport_${HOTE}.html (recommandations en fin de rapport)"
   else
@@ -481,7 +481,7 @@ rapport_central() {   # rapport_central [final|periodique]
   local py r="$PARTAGE/rapport_audit.py" sortie="$c/rapport_${CAMPAGNE}.html" verrou="$c/.rapport.verrou" n=0
   [ -f "$r" ] || r="$(dirname "$SCRIPT")/rapport_audit.py"
   [ -f "$r" ] || return 0
-  py="$(trouver_python)" || { [ "${1:-}" = final ] && journal "Python 3.6+ absent ici : le rapport central sera produit par un autre serveur (ou « campagne rapport »)"; return 0; }
+  py="$(trouver_python)" || { [ "${1:-}" = final ] && journal "Python 2.7 ou 3.6+ absent ici : le rapport central sera produit par un autre serveur (ou « campagne rapport »)"; return 0; }
   if [ "${1:-}" = periodique ] && [ -f "$sortie" ] && [ $(( $(date +%s) - $(stat -c %Y "$sortie") )) -lt 1500 ]; then return 0; fi
   if [ "${1:-}" = final ]; then   # attendre la fin des autres serveurs (15 min au plus) pour un rapport complet
     local t_lim=$(( $(date +%s) + 900 ))
@@ -568,7 +568,7 @@ cmd_campagne() {
       [ -f "$c/rapport_$CAMPAGNE.html" ] && echo "Rapport central : $c/rapport_$CAMPAGNE.html (mis à jour le $(date -r "$c/rapport_$CAMPAGNE.html" '+%d/%m %H:%M'))"
       ;;
     rapport)
-      local py; py="$(trouver_python)" || { echo "Python 3.6+ requis sur ce serveur pour générer le rapport." >&2; exit 1; }
+      local py; py="$(trouver_python)" || { echo "Python 2.7 ou 3.6+ requis sur ce serveur pour générer le rapport." >&2; exit 1; }
       "$py" "$PARTAGE/rapport_audit.py" "$c" -o "$c/rapport_${CAMPAGNE}.html"
       ;;
     arreter)

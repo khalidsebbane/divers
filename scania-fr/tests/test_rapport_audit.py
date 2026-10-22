@@ -260,3 +260,24 @@ def test_campagne_rapport_central(tmp_path):
     assert 'Campagne matin' in h and 'Lenteur centrale' in h and 'pas encore de données' in h      # x0297se attendu mais absent
     assert h.index('Serveur x0296se') < h.index('Serveur x0295se')                                  # base en premier
     assert 'Xp_facturation' in h and 'http-equiv="refresh"' not in h                               # campagne terminée : pas de rechargement
+
+
+def test_compatibilite_python27(tmp_path):
+    """RHEL 7 n'a souvent que Python 2.7 : le rapport doit s'y exécuter (test sauté si aucun python2 n'est disponible)."""
+    import shutil
+    import pytest
+    py2 = os.environ.get('PYTHON27') or shutil.which('python2.7') or shutil.which('python2')
+    if not py2:
+        pytest.skip('python 2.7 absent')
+    d = str(tmp_path / 'srv')
+    fabriquer(d)
+    fabriquer_objets(d)
+    ecrire_programmes(d)
+    sortie = str(tmp_path / 'r.html')
+    env = dict(os.environ, LC_ALL='C', LANG='C')
+    p = subprocess.run([py2, os.path.join(os.path.dirname(__file__), '..', 'rapport_audit.py'), d, '-o', sortie],
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+    assert p.returncode == 0, p.stdout.decode('utf-8', 'replace')
+    h = open(sortie, encoding='utf-8').read()
+    assert 'Dbspace datadbs presque plein' in h and 'Xp_facturation' in h and 'id="reco"' in h
+    assert open(str(tmp_path / 'r_inventaire' / '00_plan_recommandations.csv'), 'rb').read(3) == b'\xef\xbb\xbf'

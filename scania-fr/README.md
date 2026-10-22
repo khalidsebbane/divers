@@ -10,7 +10,7 @@ Les recommandations sont **calculées à partir des mesures** de la campagne et 
 | Fichier | Rôle |
 |---|---|
 | `audit-irium.sh` | Collecte en **lecture seule** sur chaque serveur et pilotage de la campagne (démarrer, état, signalements, rapport, arrêt). Bash, sans dépendance |
-| `rapport_audit.py` | Analyse les données de **tous les serveurs** de la campagne et produit le **rapport HTML central** : diagnostic, classements, programmes, plan de recommandations, export CSV. Python 3.6+, sans dépendance |
+| `rapport_audit.py` | Analyse les données de **tous les serveurs** de la campagne et produit le **rapport HTML central** : diagnostic, classements, programmes, plan de recommandations, export CSV. Python 2.7 (RHEL 7) ou 3.6+, sans dépendance |
 
 ![Exemple de diagnostic (données simulées)](docs/exemple-diagnostic.png)
 
@@ -92,7 +92,7 @@ cd /partage/audit-scania
 - **Rapport immédiat** à tout moment, sur données partielles : `./audit-irium.sh campagne rapport`.
 - **Arrêt anticipé** de tous les serveurs : `./audit-irium.sh campagne arreter`.
 - Le plan d'actions et les classements sont aussi exportés en CSV (Excel) dans `rapport_<nom>_inventaire/`.
-- Python 3.6+ est nécessaire sur au moins un serveur, ou sur le poste de l'auditeur. Si aucun serveur ne l'a (RHEL 7 n'a souvent que Python 2.7), lancer sur ce poste :
+- Le rapport fonctionne avec le **Python 2.7 de RHEL 7** (`python`) comme avec Python 3.6+. Si aucun serveur n'a Python, lancer sur le poste de l'auditeur :
   ```bash
   python3 rapport_audit.py /partage/audit-scania/campagnes/<nom>
   ```
