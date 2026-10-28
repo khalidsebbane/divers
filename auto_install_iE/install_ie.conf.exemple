@@ -5,7 +5,7 @@
 #
 #  Ce fichier est lu par bash : pas d'espace autour du « = », valeurs entre guillemets.
 #  install_ie.conf contient des secrets : il est ignoré par git, ne jamais le commiter.
-#  Les secrets laissés vides sont demandés (saisie masquée) au moment où ils servent.
+#  Les secrets laissés vides sont demandés (saisie masquée) au lancement, avant le déroulement.
 # =============================================================================================
 
 # --- Disque et LVM -----------------------------------------------------------------------------

@@ -17,7 +17,7 @@ set -Eeuo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
 umask 027
 
-readonly SCRIPT_VERSION="6.0.0"
+readonly SCRIPT_VERSION="6.1.0"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 readonly SCRIPT_NAME SCRIPT_DIR
@@ -27,6 +27,7 @@ readonly HORODATAGE
 # --- Options (modifiables par la ligne de commande) -------------------------------------------
 CONFIG_FILE="$SCRIPT_DIR/install_ie.conf"
 NON_INTERACTIF=0
+INTERACTIF_INITIAL=0             # lancé en interactif : questions au début, puis automatique
 SIMULATION=0
 FORCER=0
 VERBEUX=0
@@ -51,7 +52,8 @@ declare -a ETAPES_A_LANCER=()
 declare -a ETAPES_FAITES=() ETAPES_IGNOREES=()
 
 # =============================================================================================
-#  Valeurs par défaut (surchargées par install_ie.conf puis, en mode interactif, par la saisie)
+#  PARAMÈTRES : à modifier ici, ou dans install_ie.conf (prioritaire), ou à la saisie au lancement.
+#  Les secrets (ECW_*, GENERO_*) laissés vides sont demandés au lancement, avant le déroulement.
 # =============================================================================================
 DISK="/dev/sdb"
 PV_MODE="partition"              # partition : crée une partition GPT | disque : disque entier
@@ -1018,6 +1020,7 @@ choisir_edition() {
         2|workgroup)  EDITION_NOM=WORKGROUP;  EDITION_ZIP="INF_WrkgrpEd_License_Install.zip";       EDITION_INNER="ibm.editionInstaller.we.*.ALL.zip" ;;
         3|enterprise) EDITION_NOM=ENTERPRISE; EDITION_ZIP="INF_EtprsEd_License_Install14.10.zip";   EDITION_INNER="ibm.editionInstaller.ee.*.ALL.zip" ;;
     esac
+    INFORMIX_EDITION=$e
     log "Édition retenue : $EDITION_NOM"
 }
 
@@ -1409,6 +1412,71 @@ EOF
 }
 
 # =============================================================================================
+#  Questions préalables : tout est demandé avant le déroulement, qui est ensuite automatique
+# =============================================================================================
+etape_prevue() {
+    local e
+    for e in "${ETAPES_A_LANCER[@]}"; do [[ "$e" == "$1" ]] && return 0; done
+    return 1
+}
+
+# Remplace une valeur « demander » par la réponse (oui/non).
+trancher() {
+    local var=$1 question=$2
+    [[ "${!var,,}" == "demander" ]] || return 0
+    if confirmer "$question"; then printf -v "$var" oui; else printf -v "$var" non; fi
+}
+
+preparer_automatisation() {
+    section "Questions préalables (plus aucune question ensuite)"
+
+    if etape_prevue disques && [[ "$PV_MODE" == "disque" && -b "$DISK" ]] && ! vgs "$VG_NAME" >/dev/null 2>&1 \
+       && [[ -n "$(wipefs -n "$DISK" 2>/dev/null)" ]]; then
+        warn "Signatures présentes sur $DISK :"
+        wipefs -n "$DISK" || true
+        confirmer "EFFACER définitivement ces signatures pendant l'installation ?" \
+            || die "Vérification manuelle nécessaire sur $DISK avant de relancer."
+        EFFACER_SIGNATURES="oui"
+    fi
+    if etape_prevue varlog && ! mountpoint -q /var/log; then
+        trancher VARLOG_ACTION "/var/log n'est pas un volume dédié : créer un LV de $VARLOG_SIZE dans $VARLOG_VG ?"
+    fi
+    local informix_a_installer=0
+    if etape_prevue informix_install && { [[ ! -x "$INFORMIX_DIR/bin/oninit" ]] || (( FORCER )); }; then
+        informix_a_installer=1
+        choisir_edition
+    fi
+    etape_prevue dump  && trancher LANCER_DUMP "Lancer le dump Informix (backup.cde) en fin d'installation ?"
+    etape_prevue v3300 && trancher INSTALLER_V3300 "Installer la v3300 dans $V3300_DIR ?"
+
+    # Secrets nécessaires aux étapes prévues (saisie masquée, jamais journalisés)
+    if etape_prevue scripto \
+       || { (( informix_a_installer )) && [[ ! -s "$SOURCES_DIR/Informix_fc13_Irium_Installer.tgz" ]]; } \
+       || { etape_prevue v3300 && [[ "${INSTALLER_V3300,,}" == "oui" && ! -s "$V3300_BINAIRE" ]]; }; then
+        demander_secret ECW_USER "Utilisateur du portail ECW IRIUM"
+        demander_secret ECW_PASSWORD "Mot de passe du portail ECW IRIUM"
+    fi
+    if etape_prevue genero; then
+        demander_secret GENERO_LICENCE_NUMERO "Numéro de licence Genero (ex : TAB#XXXXXXXX)"
+        demander_secret GENERO_LICENCE_CLE "Clé de licence Genero"
+        demander_secret GENERO_CLIENT "Identifiant client 4js"
+    fi
+
+    section "Déroulement prévu"
+    log "Étapes : ${ETAPES_A_LANCER[*]}"
+    etape_prevue varlog          && log "/var/log dédié     : $VARLOG_ACTION"
+    (( informix_a_installer ))   && log "Édition Informix   : ${INFORMIX_EDITION}"
+    etape_prevue dump            && log "Dump Informix      : $LANCER_DUMP"
+    etape_prevue v3300           && log "Installation v3300 : $INSTALLER_V3300"
+    etape_prevue disques         && warn "Le disque $DISK va être partitionné et formaté (VG $VG_NAME)."
+    etape_prevue informix_init   && warn "L'instance $(nom_instance_informix) sera initialisée (oninit -iy) si elle n'est pas en ligne."
+    confirmer "Lancer l'installation automatique ?" || { log "Arrêt demandé."; exit 0; }
+
+    NON_INTERACTIF=1
+    ok "Mode automatique : l'installation se déroule sans intervention (journal : $LOG_FILE)."
+}
+
+# =============================================================================================
 #  Orchestration
 # =============================================================================================
 etape_faite()    { [[ -f "$ETAT_DIR/$1.ok" ]]; }
@@ -1562,6 +1630,10 @@ main() {
     fi
 
     selection_etapes
+    if (( ! NON_INTERACTIF )); then
+        INTERACTIF_INITIAL=1
+        preparer_automatisation
+    fi
     local e
     for e in "${ETAPES_A_LANCER[@]}"; do
         executer_etape "$e"
@@ -1571,8 +1643,11 @@ main() {
     section "Récapitulatif"
     if [[ -f "$CREDENTIALS_FILE" ]]; then
         log "Identifiants des comptes : $CREDENTIALS_FILE (600)"
-        if (( ! NON_INTERACTIF )) && [[ -w /dev/tty ]] && confirmer "Afficher les identifiants à l'écran (non journalisés) pour LockSelf ?"; then
-            cat "$CREDENTIALS_FILE" >/dev/tty
+        if (( INTERACTIF_INITIAL )) && [[ -w /dev/tty ]]; then
+            NON_INTERACTIF=0
+            if confirmer "Afficher les identifiants à l'écran (non journalisés) pour LockSelf ?"; then
+                cat "$CREDENTIALS_FILE" >/dev/tty
+            fi
         fi
     fi
     warn "À faire : saisir les identifiants dans LockSelf puis supprimer $CREDENTIALS_FILE (shred -u)."

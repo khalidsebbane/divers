@@ -12,21 +12,30 @@ Il s'agit de la refonte (v6) du script `Installation_serveur_iE_auto_HIS_v5` d'H
 
 | Fichier | Rôle |
 |---|---|
-| `install_ie.sh` | Script principal (Bash, à lancer en root) |
-| `install_ie.conf.exemple` | Modèle de configuration, à copier en `install_ie.conf` |
-| `tests/test_install_ie.sh` | Tests : analyse statique, fonctions de validation, exécution complète en simulation |
+| `install_ie.sh` | **Script tout-en-un**, le seul fichier à déposer sur le serveur (Bash, à lancer en root) |
+| `install_ie.conf.exemple` | Modèle de configuration, facultatif (les paramètres peuvent aussi être modifiés en tête du script) |
+| `tests/test_install_ie.sh` | Tests : analyse statique, fonctions de validation, simulation complète, parcours interactif |
 
-## Démarrage rapide
+## Utilisation
 
-```bash
-cp install_ie.conf.exemple install_ie.conf
-```
+**1. Déposer le script sur le serveur.** Utilisez WinSCP, ou `scp` depuis votre poste :
 
 ```bash
-chmod 600 install_ie.conf
+scp install_ie.sh admin@nouveau-serveur:/root/
 ```
 
-Renseigner ensuite le disque, l'IP de l'ancien serveur et les secrets dans `install_ie.conf`.
+Si le fichier a été ouvert ou modifié sous Windows, retirez les fins de ligne Windows :
+
+```bash
+sed -i 's/\r$//' /root/install_ie.sh
+```
+
+**2. Renseigner les paramètres.** Trois possibilités, au choix :
+- modifier le bloc `PARAMÈTRES` en tête de `install_ie.sh` (disque, VG, tailles, IP de l'ancien serveur…) ;
+- ou créer un `install_ie.conf` à côté du script, à partir de `install_ie.conf.exemple` ;
+- ou ne rien préparer : les valeurs sont affichées au lancement, et `n` permet de les saisir.
+
+**3. Vérifier, puis lancer :**
 
 ```bash
 sudo ./install_ie.sh --simulation
@@ -36,9 +45,23 @@ sudo ./install_ie.sh --simulation
 sudo ./install_ie.sh
 ```
 
-Le premier lancement en `--simulation` affiche toutes les actions **sans rien modifier**. Le second fait l'installation réelle, de façon interactive.
+`--simulation` affiche toutes les actions **sans rien modifier**.
 
-Sans fichier `install_ie.conf`, le script fonctionne comme la v5 : il affiche les valeurs par défaut et propose de les modifier (`o` pour continuer, `n` pour modifier, `s` pour arrêter). Les secrets laissés vides sont demandés en **saisie masquée** au moment où ils servent.
+Au lancement réel, **toutes les questions sont posées au début** :
+- validation des paramètres ;
+- édition Informix ;
+- dump et v3300 ;
+- volume dédié à `/var/log` ;
+- effacement éventuel du disque ;
+- secrets ECW et licence Genero, en saisie masquée.
+
+Le script affiche ensuite le déroulement prévu et demande **une seule confirmation**. À partir de là, l'installation se déroule **sans aucune intervention** jusqu'à la fin. Seul l'affichage des identifiants, tout à la fin, est proposé.
+
+Pour un lancement sans aucune question, mettez toutes les valeurs, secrets compris, dans `install_ie.conf`, puis :
+
+```bash
+sudo ./install_ie.sh --oui
+```
 
 ## Prérequis
 
@@ -163,6 +186,7 @@ bash tests/test_install_ie.sh
 Le test vérifie :
 - la syntaxe, `shellcheck` et l'absence de CRLF ;
 - les fonctions de validation, de génération de mots de passe et de modification de l'onconfig ;
-- en root, une **exécution complète en `--simulation`** avec des commandes système factices : toutes les étapes, aucune erreur, aucun secret affiché.
+- en root, une **exécution complète en `--simulation`** avec des commandes système factices : toutes les étapes, aucune erreur, aucun secret affiché ;
+- le **parcours interactif** dans un vrai terminal : réponses données au début, plus aucune question ensuite.
 
 Il ne modifie pas le système.

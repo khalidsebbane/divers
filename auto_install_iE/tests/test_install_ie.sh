@@ -109,6 +109,22 @@ if [[ $EUID -eq 0 && -n "$disque" ]]; then
     verifier "simulation : pas de secret affiché"    non grep -qi 'password=' <<<"$sortie"
     verifier "simulation : aucun état enregistré"    non compgen -G "$ICI/../.etat/*.ok"
     [[ $rc -eq 0 ]] || tail -25 <<<"$sortie"
+
+    # Parcours interactif : réponses saisies dans un vrai terminal (commande « script »)
+    if command -v script >/dev/null; then
+        sed -i -e 's/^INFORMIX_EDITION=.*/INFORMIX_EDITION=""/' -e 's/^LANCER_DUMP=.*/LANCER_DUMP="demander"/' \
+               -e 's/^INSTALLER_V3300=.*/INSTALLER_V3300="demander"/' "$bac/test.conf"
+        # o : paramètres | 2 : Workgroup | o : dump | n : v3300 | o : lancement
+        sortie=$(printf 'o\n2\no\nn\no\n' | PATH="$bac/bin:$PATH" NO_COLOR=1 \
+                 script -qec "bash '$SCRIPT' --simulation --config '$bac/test.conf'" /dev/null 2>&1 | tr -d '\r')
+        apres=$(sed '1,/Mode automatique/d' <<<"$sortie")
+        verifier "interactif : questions puis mode automatique" grep -q 'Mode automatique' <<<"$sortie"
+        verifier "interactif : édition choisie au début"        grep -q 'Édition retenue : WORKGROUP' <<<"$sortie"
+        verifier "interactif : aucune question ensuite"         non grep -q 'o/n/s=arrêt\|Choix :' <<<"$apres"
+        verifier "interactif : réponses appliquées (dump oui)"  grep -q '\[SIMU\].*backup.cde' <<<"$apres"
+        verifier "interactif : réponses appliquées (v3300 non)" grep -q 'Installation v3300 ignorée' <<<"$apres"
+        verifier "interactif : toutes les étapes"               grep -q "Étape « migration » terminée" <<<"$apres"
+    fi
 else
     echo "  (simulation ignorée : nécessite root et un périphérique bloc)"
 fi
