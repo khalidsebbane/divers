@@ -1,0 +1,55 @@
+# =============================================================================================
+#  Configuration de install_ie.sh
+#
+#  cp install_ie.conf.exemple install_ie.conf && chmod 600 install_ie.conf
+#
+#  Ce fichier est lu par bash : pas d'espace autour du « = », valeurs entre guillemets.
+#  install_ie.conf contient des secrets : il est ignoré par git, ne jamais le commiter.
+#  Les secrets laissés vides sont demandés (saisie masquée) au moment où ils servent.
+# =============================================================================================
+
+# --- Disque et LVM -----------------------------------------------------------------------------
+DISK="/dev/sdb"                  # disque dédié aux données (vérifier avec lsblk)
+PV_MODE="partition"              # partition : partition GPT créée sur le dernier espace libre
+                                 # disque    : disque entier (refusé s'il a des partitions)
+PARTITION_NAME=""                # partition attendue, ex. /dev/sdb1 (vide = détection automatique)
+EFFACER_SIGNATURES="non"         # mode disque + --oui : « oui » autorise wipefs -a (DESTRUCTEUR)
+VG_NAME="iriumvg"
+SIZE_DATALV="100G"               # /data   : minimum 80G
+SIZE_MSDOSLV="50G"               # /msdos
+SIZE_BACKUPLV="30G"              # /backup
+
+# --- /var/log dédié (si /var/log n'est pas déjà un point de montage) ---------------------------
+VARLOG_ACTION="demander"         # oui | non | demander
+VARLOG_VG="vg_00"                # VG système de l'image
+VARLOG_SIZE="4G"
+
+# --- Serveurs --------------------------------------------------------------------------------
+OLDSRV_IP=""                     # IP de l'ancien serveur (alias SSH « oldsrv »), ex. 192.168.111.50
+OLDSRV_NAME=""                   # nom de l'ancien serveur : ajoute l'alias Informix ol_<nom>_net
+IP_SERVEUR=""                    # IP de ce serveur (vide = première adresse de « hostname -I »)
+
+# --- Applications ----------------------------------------------------------------------------
+VERSION_GENERO="3"               # 2 ou 3
+INFORMIX_EDITION=""              # express | workgroup | enterprise (vide = question)
+INFORMIX_CPU_VPS=8               # VPCLASS cpu,num=
+LANCER_DUMP="demander"           # oui | non | demander
+INSTALLER_V3300="demander"       # oui | non | demander
+PROMPT_COULEUR="RED"             # variable de couleur utilisée par /etc/profile.d/custom.sh
+
+# --- Emplacements (valeurs de l'image IRIUM standard) -----------------------------------------
+SOURCES_DIR="/home/irium"        # genero-*.tgz, jre-8u201, Informix_fc13_Irium_Installer.tgz,
+                                 # modèles « informix » et « param_ids »
+IRIUM_DIR="/opt/irium"
+INFORMIX_DIR="/opt/irium/informix"
+CREDENTIALS_FILE="/root/ie_identifiants.txt"
+
+# --- Portail de téléchargement ECW IRIUM (SECRETS) --------------------------------------------
+ECW_USER=""
+ECW_PASSWORD=""
+DL_VERIFY_TLS="non"              # « oui » dès que le certificat du portail est reconnu
+
+# --- Licence Genero / 4js (SECRETS) -----------------------------------------------------------
+GENERO_LICENCE_NUMERO=""         # ex. TAB#XXXXXXXX
+GENERO_LICENCE_CLE=""
+GENERO_CLIENT=""                 # identifiant client 4js

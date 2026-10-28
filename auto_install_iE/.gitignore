@@ -1,0 +1,7 @@
+# Configuration locale : contient des secrets (mots de passe ECW, licences Genero)
+install_ie.conf
+# Données d'exécution
+logs/
+.etat/
+sortie/
+*.avant_ie_*
