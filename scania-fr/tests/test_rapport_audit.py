@@ -380,3 +380,30 @@ def test_expert_informix(tmp_path):
     r.generer([s], sortie)
     h = open(sortie, encoding='utf-8').read()
     assert 'Analyse experte Informix' in h and 'Vitesse des chunks' in h and 'Chaînes de blocage' in h and 'Requêtes SQL tracées' in h
+
+
+def test_dashboard_kpi(tmp_path):
+    import dashboard_kpi as dk
+    d = str(tmp_path / 'srv')
+    fabriquer(d)
+    fabriquer_objets(d)
+    with open(os.path.join(d, 'statique', 'cycle_de_vie.txt'), 'w') as f:
+        f.write('== Système\nRed Hat Enterprise Linux Server release 7.6 (Maipo)\nnoyau=3.10.0-957.el7.x86_64\n\n== Derniers paquets installés\n'
+                'tzdata-2018g-1.el7.noarch                     Thu 15 Nov 2018 10:11:40 AM CET\n\n== Abonnement\nOverall Status: Unknown\n\n'
+                '== Dépôts actifs (cache local)\nThere are no enabled repos.\n\n== Briques\npython=Python 2.7.5\n')
+    s = r.charger(d)
+    cv = dk.cycle_de_vie(s)
+    assert cv['majeure'] == 7 and cv['mineure'] == 6 and cv['depots'] == 'aucun' and cv['derniere_maj'].year == 2018
+    import datetime as dt
+    assert dk.statut_os(cv, dt.date(2026, 10, 29))[0] == 'critique'
+    assert dk.statut_os({'majeure': 9, 'mineure': 4}, dt.date(2026, 10, 29))[0] == 'bon'
+    k = dk.kpis_serveur(s)
+    assert k['dbspace']['statut'] == 'critique' and k['verrous']['statut'] in ('degrade', 'critique')
+    arg = [a[0] for a in dk.argumentaire([s], {s['nom']: k}, {s['nom']: cv}, dt.date(2026, 10, 29))]
+    assert 'Sécurité et conformité' in arg and 'Maintien en condition' in arg and 'Outillage' in arg
+    sortie = str(tmp_path / 'dash.html')
+    score, etat = dk.generer([s], sortie)
+    h = open(sortie, encoding='utf-8').read()
+    assert 0 <= score < 80 and 'Pourquoi passer à RHEL 9' in h and 'Infrastructure cible proposée' in h and 'Feuille de route' in h
+    score2, _ = dk.generer([s], str(tmp_path / 'dash2.html'), avant=[s])
+    assert 'Avant / après' in open(str(tmp_path / 'dash2.html'), encoding='utf-8').read()

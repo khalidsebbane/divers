@@ -15,6 +15,8 @@
 #   ./audit-irium.sh marquer "lenteur saisie commande agence Lyon"   signalement utilisateur (depuis n'importe quel serveur)
 #   ./audit-irium.sh campagne rapport [nom]         rapport CENTRAL à tout moment (données partielles ou finales)
 #   ./audit-irium.sh campagne arreter [nom]         arrêt anticipé de tous les serveurs
+#   Tableau de bord KPI (direction) : <dossier du script>/dashboard_<nom>.html, généré avec chaque rapport
+#   (ou : python dashboard_kpi.py <campagne> [--avant <campagne de référence>])
 #   Résultat : <partage>/campagnes/<nom>/rapport_<nom>.html : un seul rapport pour tous les serveurs, régénéré
 #   automatiquement pendant la campagne et à la fin ; données de chaque serveur dans <partage>/campagnes/<nom>/<serveur>/.
 #
@@ -127,6 +129,15 @@ statique_systeme() {
     echo; echo "== Heure / NTP"; date; (chronyc tracking 2>/dev/null || ntpq -p 2>/dev/null || timedatectl 2>/dev/null) | head -20
   } > "$d/systeme.txt" 2>&1
   { lscpu; echo; existe numactl && numactl --hardware; } > "$d/cpu.txt" 2>&1
+  # Cycle de vie (obsolescence) : version, derniers correctifs, abonnement et dépôts, briques logicielles
+  { echo "== Système"; cat /etc/redhat-release 2>/dev/null; echo "noyau=$(uname -r)"; echo "uptime_jours=$(awk '{print int($1/86400)}' /proc/uptime)"
+    echo; echo "== Derniers paquets installés"; rpm -qa --last 2>/dev/null | head -5
+    echo; echo "== Abonnement"; timeout 30 subscription-manager status 2>&1 | head -8
+    echo; echo "== Dépôts actifs (cache local)"; timeout 30 yum -C -q repolist enabled 2>&1 | tail -8
+    echo; echo "== Briques"; for c in python python2 python3 platform-python; do existe "$c" && echo "$c=$($c -V 2>&1 | head -1)"; done
+    ls -d /opt/rh/rh-python3* 2>/dev/null | sed 's/^/scl=/'; echo "openssl=$(openssl version 2>/dev/null)"; echo "glibc=$(ldd --version 2>/dev/null | head -1)"
+    echo "selinux=$(getenforce 2>/dev/null)"; echo "systemd=$(systemctl --version 2>/dev/null | head -1)"
+  } > "$d/cycle_de_vie.txt" 2>&1
   { free -m; echo; cat /proc/meminfo; } > "$d/memoire.txt" 2>&1
   {
     for k in vm.swappiness vm.dirty_ratio vm.dirty_background_ratio vm.overcommit_memory kernel.shmmax kernel.shmall kernel.shmmni \
@@ -571,6 +582,18 @@ copier_rapport() {   # copier_rapport <rapport.html> <nom sans extension>
   journal "Rapport copié : $dest/$2.html"
 }
 
+# Tableau de bord KPI (direction) à côté du script : dashboard_<nom>.html
+generer_dashboard() {   # generer_dashboard <source : dossier d'audit ou de campagne> <nom>
+  local py d; d="$(dirname "$SCRIPT")/dashboard_kpi.py"
+  [ -f "$d" ] || return 0
+  py="$(trouver_python)" || return 0
+  if timeout 600 nice -n 19 $py "$d" "$1" -o "$(dirname "$SCRIPT")/dashboard_$2.html" >> "${DOSSIER:-$1}/journal.txt" 2>&1; then
+    journal "Tableau de bord : $(dirname "$SCRIPT")/dashboard_$2.html"
+  else
+    journal "Échec du tableau de bord (voir journal.txt)"
+  fi
+}
+
 trouver_python() {   # Python 3.6+ de préférence, sinon le Python 2.7 de RHEL 7
   local py
   local scl
@@ -596,6 +619,7 @@ generer_rapport() {
   if timeout 600 $py "$r" "$DOSSIER" -o "$DOSSIER/rapport_${HOTE}.html" >> "$DOSSIER/journal.txt" 2>&1; then
     journal "Rapport : $DOSSIER/rapport_${HOTE}.html (recommandations en fin de rapport)"
     copier_rapport "$DOSSIER/rapport_${HOTE}.html" "rapport_${HOTE}_$(basename "$DOSSIER" | sed "s/^${HOTE}_//")"
+    generer_dashboard "$DOSSIER" "${HOTE}_$(basename "$DOSSIER" | sed "s/^${HOTE}_//")"
   else
     journal "Échec de génération du rapport (voir journal.txt) : relancer rapport_audit.py sur l'archive"
   fi
@@ -655,6 +679,7 @@ rapport_central() {   # rapport_central [final|periodique]
   if timeout 900 nice -n 19 $py "$r" "$c" -o "$sortie" > "$c/.rapport_${HOTE}.log" 2>&1; then
     journal "Rapport central mis à jour : $sortie"
     copier_rapport "$sortie" "rapport_${CAMPAGNE}"
+    generer_dashboard "$c" "$CAMPAGNE"
   else
     journal "Échec du rapport central (voir $c/.rapport_${HOTE}.log)"
   fi
@@ -730,11 +755,12 @@ cmd_campagne() {
       local py; py="$(trouver_python)" || { echo "Python 2.7 ou 3.6+ requis sur ce serveur pour générer le rapport." >&2; exit 1; }
       $py "$PARTAGE/rapport_audit.py" "$c" -o "$c/rapport_${CAMPAGNE}.html"
       DOSSIER="$c" copier_rapport "$c/rapport_${CAMPAGNE}.html" "rapport_${CAMPAGNE}"
+      DOSSIER="$c" generer_dashboard "$c" "$CAMPAGNE"
       ;;
     arreter)
       touch "$c/ARRET" && echo "Arrêt demandé : chaque serveur termine son relevé en cours, synchronise ses données puis le rapport central est produit."
       ;;
-    *) sed -n '3,33p' "$SCRIPT"; exit 1 ;;
+    *) sed -n '3,36p' "$SCRIPT"; exit 1 ;;
   esac
 }
 
@@ -903,5 +929,5 @@ case "$ACTION" in
   statut) cmd_statut ;;
   arreter) cmd_arreter ;;
   _executer) executer_supervision ;;  # interne
-  *) sed -n '3,33p' "$0"; exit 1 ;;
+  *) sed -n '3,36p' "$0"; exit 1 ;;
 esac
