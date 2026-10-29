@@ -91,7 +91,7 @@ SOURCES_DIR="$bac/src"
 IRIUM_DIR="$bac/irium"
 INFORMIX_DIR="$bac/irium/informix"
 CREDENTIALS_FILE="$bac/identifiants.txt"
-VARLOG_ACTION="non"
+VARLOG_ACTION="oui"
 LANCER_DUMP="non"
 INSTALLER_V3300="non"
 EOF
@@ -100,8 +100,11 @@ touch "$bac/src/genero-3.20.13-64.tgz" "$bac/src/jre-8u201-linux-x64.rpm" "$bac/
       "$bac/irium/manager/bin/archivage_ids.std"
 
 if [[ $EUID -eq 0 && -n "$disque" ]]; then
+    tmp_avant=$(compgen -G "/tmp/install_ie.*" | wc -l)
     sortie=$(PATH="$bac/bin:$PATH" bash "$SCRIPT" --simulation --oui --config "$bac/test.conf" 2>&1)
     rc=$?
+    verifier "aucun dossier temporaire laissé"        egal "$(compgen -G "/tmp/install_ie.*" | wc -l)" "$tmp_avant"
+    verifier "varlog : ancien contenu via le parent /" grep -q '\[SIMU\]  mount --bind / ' <<<"$sortie"
     verifier "simulation : code retour 0"            egal "$rc" 0
     verifier "simulation : toutes les étapes"        grep -q "Étape « migration » terminée" <<<"$sortie"
     verifier "simulation : rien d'exécuté (pvcreate)" grep -q '\[SIMU\].*pvcreate' <<<"$sortie"

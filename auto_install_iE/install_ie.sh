@@ -16,8 +16,9 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
 umask 027
+export LVM_SUPPRESS_FD_WARNINGS=1   # descripteur du verrou hérité par les commandes LVM
 
-readonly SCRIPT_VERSION="6.1.0"
+readonly SCRIPT_VERSION="6.1.1"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 readonly SCRIPT_NAME SCRIPT_DIR
@@ -160,7 +161,7 @@ nettoyage() {
     if (( JAVA_A_RESTAURER )) && [[ -x "$JAVA8_PATH" ]]; then
         alternatives --set java "$JAVA8_PATH" >/dev/null 2>&1 && log "Java 8 rétabli par défaut."
     fi
-    [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]] && rm -rf "$TMP_DIR"
+    supprimer_dossier_tmp "$TMP_DIR"
     local duree=$(( SECONDS - DEBUT_EXECUTION ))
     echo
     if (( rc == 0 )); then
@@ -236,9 +237,13 @@ demander_secret() {
     [[ -n "${!var:-}" ]] && return 0
     if (( SIMULATION )); then printf -v "$var" '%s' "<$var>"; return 0; fi
     (( NON_INTERACTIF )) && die "$var est vide dans $CONFIG_FILE (requis en mode --oui)." 3
-    read -r -s -p "$libelle : " valeur </dev/tty; echo >/dev/tty
-    [[ -n "$valeur" ]] || die "$var ne peut pas être vide." 3
-    printf -v "$var" '%s' "$valeur"
+    local essai
+    for essai in 1 2 3; do
+        read -r -s -p "$libelle : " valeur </dev/tty; echo >/dev/tty
+        [[ -n "$valeur" ]] && { printf -v "$var" '%s' "$valeur"; return 0; }
+        warn "Valeur vide : ressaisir ($essai/3)."
+    done
+    die "$var ne peut pas être vide." 3
 }
 
 saisir() {
@@ -248,9 +253,42 @@ saisir() {
     return 0
 }
 
+# Dossier temporaire de l'exécution : créé par main() dans le shell principal (une création
+# dans un sous-shell « $(tmp_dir) » serait perdue et le dossier jamais nettoyé).
 tmp_dir() {
     [[ -n "$TMP_DIR" ]] || TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/install_ie.XXXXXX")"
     printf '%s' "$TMP_DIR"
+}
+
+# Points de montage situés sous un dossier (les plus profonds d'abord).
+montages_sous() {
+    { findmnt -rn -o TARGET 2>/dev/null || true; } | awk -v d="$1/" 'index($0, d) == 1' | sort -r
+}
+
+# Suppression sûre d'un dossier temporaire : démonte d'abord tout ce qui y est monté, ne franchit
+# jamais de point de montage, et renonce s'il reste un montage (jamais de rm -rf à travers un bind).
+supprimer_dossier_tmp() {
+    local d=$1 m
+    [[ -n "$d" && -d "$d" && "$d" == /*/install_ie.* ]] || return 0
+    while read -r m; do
+        [[ -n "$m" ]] && { umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null || true; }
+    done < <(montages_sous "$d")
+    if [[ -n "$(montages_sous "$d")" ]]; then
+        warn "Montage encore actif sous $d : dossier conservé (démonter puis supprimer à la main)."
+        return 0
+    fi
+    rm -rf --one-file-system "$d"
+}
+
+# Dossiers temporaires laissés par des exécutions précédentes (le verrou garantit qu'aucune autre
+# exécution n'est en cours) : démontage puis suppression sûre.
+nettoyer_restes_tmp() {
+    local d
+    for d in "${TMPDIR:-/tmp}"/install_ie.*; do
+        [[ -d "$d" && "$d" != "$TMP_DIR" ]] || continue
+        [[ -n "$(montages_sous "$d")" ]] && warn "Montage oublié par une exécution précédente sous $d : démontage."
+        supprimer_dossier_tmp "$d"
+    done
 }
 
 # Copie de sauvegarde unique par exécution : fichier.avant_ie_<horodatage>.
@@ -679,8 +717,44 @@ etape_dossiers() {
 }
 
 # --------------------------------------------------------------------------------------------
+VARLOG_PARENT="/var"             # /var/log se trouve dans le système de fichiers qui porte /var
+
+# Système de fichiers qui contient (ou contenait, avant le montage) le dossier /var/log.
+parent_varlog() { findmnt -n -o TARGET -T "$VARLOG_PARENT" 2>/dev/null || echo /; }
+
+# Après montage du volume dédié, l'ancien contenu de /var/log reste caché sous le point de montage,
+# dans le système de fichiers parent (/var s'il est séparé, sinon /). Il est libéré via un montage
+# « bind » de ce parent, dans le dossier temporaire, puis démonté immédiatement.
+liberer_ancien_varlog() {
+    local parent rel vue taille
+    mountpoint -q /var/log || (( SIMULATION )) || die "/var/log n'est pas monté : rien ne doit être supprimé."
+    parent=$(parent_varlog)
+    if [[ "$parent" == "/" ]]; then rel="/var/log"; else rel="/var/log"; rel="${rel#"$parent"}"; fi
+    run systemctl restart systemd-journald
+    systemctl is-active -q rsyslog 2>/dev/null && run systemctl restart rsyslog
+
+    vue="$(tmp_dir)/ancien_varlog"
+    run mkdir -p "$vue"
+    run mount --bind "$parent" "$vue"
+    if [[ -d "$vue$rel" ]] && [[ -n "$(ls -A "$vue$rel" 2>/dev/null)" ]]; then
+        taille=$(du -sh -x "$vue$rel" 2>/dev/null | cut -f1)
+        run find "$vue$rel" -xdev -mindepth 1 -delete
+        ok "Ancien contenu de /var/log libéré dans $parent (${taille:-?})."
+    else
+        log "Aucun ancien contenu de /var/log à libérer dans $parent."
+    fi
+    run umount "$vue"
+    run rmdir "$vue"
+}
+
 etape_varlog() {
+    local lv=lv_var_log dev
+    dev="/dev/mapper/${VARLOG_VG//-/--}-$lv"
     if mountpoint -q /var/log; then
+        if [[ "$(readlink -f "$(findmnt -n -o SOURCE /var/log)")" == "$(readlink -f "$dev" 2>/dev/null)" ]]; then
+            # Volume créé par ce script : finit le travail d'une exécution interrompue.
+            liberer_ancien_varlog
+        fi
         ok "/var/log est déjà un point de montage dédié."
         df -h /var/log
         return 0
@@ -688,34 +762,27 @@ etape_varlog() {
     warn "/var/log n'est PAS un volume dédié."
     decider "$VARLOG_ACTION" "Créer un volume logique $VARLOG_SIZE dans $VARLOG_VG pour /var/log ?" || {
         warn "Volume /var/log non créé (choix de l'utilisateur)."; return 0; }
-    vgs "$VARLOG_VG" >/dev/null 2>&1 || die "Le Volume Group $VARLOG_VG (VARLOG_VG) n'existe pas."
+    vgs "$VARLOG_VG" >/dev/null 2>&1 || (( SIMULATION )) || die "Le Volume Group $VARLOG_VG (VARLOG_VG) n'existe pas."
 
-    local lv=lv_var_log dev="/dev/mapper/${VARLOG_VG//-/--}-lv_var_log" tmp
     lvs "$VARLOG_VG/$lv" >/dev/null 2>&1 || run lvcreate -y -L "$VARLOG_SIZE" -n "$lv" "$VARLOG_VG"
     [[ -n "$(blkid -o value -s TYPE "$dev" 2>/dev/null)" ]] || run mkfs.xfs -q "$dev"
 
-    tmp="$(tmp_dir)/varlog"
-    run mkdir -p "$tmp"
-    run mount "$dev" "$tmp"
+    local neuf
+    neuf="$(tmp_dir)/varlog_neuf"
+    run mkdir -p "$neuf"
+    run mount "$dev" "$neuf"
     log "Copie du contenu de /var/log (droits, ACL, contextes SELinux conservés)..."
-    run cp -a --preserve=all /var/log/. "$tmp/"
-    run umount "$tmp"
+    run cp -a --preserve=all /var/log/. "$neuf/"
+    run umount "$neuf"
+    run rmdir "$neuf"
 
     ajouter_ligne /etc/fstab "$dev  /var/log  xfs  defaults  0 0"
     run systemctl daemon-reload
     run mount /var/log
     command -v restorecon >/dev/null && run restorecon -R /var/log
-
-    # Libère l'ancien contenu, désormais masqué, via un montage « bind » de la racine.
-    local racine="$tmp/racine"
-    run mkdir -p "$racine"
-    run mount --bind / "$racine"
-    run find "$racine/var/log" -mindepth 1 -delete
-    run umount "$racine"
-
-    run systemctl restart systemd-journald
-    systemctl is-active -q rsyslog 2>/dev/null && run systemctl restart rsyslog
     mountpoint -q /var/log || (( SIMULATION )) || die "/var/log n'est pas monté après l'opération."
+
+    liberer_ancien_varlog
     ok "/var/log monté sur $dev."
     df -h /var/log
 }
@@ -1465,7 +1532,7 @@ preparer_automatisation() {
     section "Déroulement prévu"
     log "Étapes : ${ETAPES_A_LANCER[*]}"
     etape_prevue varlog          && log "/var/log dédié     : $VARLOG_ACTION"
-    (( informix_a_installer ))   && log "Édition Informix   : ${INFORMIX_EDITION}"
+    (( informix_a_installer ))   && log "Édition Informix   : ${EDITION_NOM}"
     etape_prevue dump            && log "Dump Informix      : $LANCER_DUMP"
     etape_prevue v3300           && log "Installation v3300 : $INSTALLER_V3300"
     etape_prevue disques         && warn "Le disque $DISK va être partitionné et formaté (VG $VG_NAME)."
@@ -1606,6 +1673,8 @@ main() {
     trap nettoyage EXIT
     trap interruption INT TERM
     prendre_verrou
+    TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/install_ie.XXXXXX")"
+    nettoyer_restes_tmp
 
     banniere
     log "Lancement : $0 $*  (pid $$, journal $LOG_FILE)"
