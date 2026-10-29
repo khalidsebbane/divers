@@ -404,6 +404,6 @@ def test_dashboard_kpi(tmp_path):
     sortie = str(tmp_path / 'dash.html')
     score, etat = dk.generer([s], sortie)
     h = open(sortie, encoding='utf-8').read()
-    assert 0 <= score < 80 and 'Pourquoi passer à RHEL 9' in h and 'Infrastructure cible proposée' in h and 'Feuille de route' in h
+    assert 0 <= score < 80 and 'Pourquoi passer à RHEL 9' in h and 'respecter ces prérequis' in h and 'Feuille de route' in h
     score2, _ = dk.generer([s], str(tmp_path / 'dash2.html'), avant=[s])
     assert 'Avant / après' in open(str(tmp_path / 'dash2.html'), encoding='utf-8').read()

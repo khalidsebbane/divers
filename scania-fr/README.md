@@ -11,7 +11,7 @@ Les recommandations sont **calculées à partir des mesures** de la campagne et 
 |---|---|
 | `audit-irium.sh` | Collecte en **lecture seule** sur chaque serveur et pilotage de la campagne (démarrer, état, signalements, rapport, arrêt). Bash, sans dépendance |
 | `rapport_audit.py` | Analyse les données de **tous les serveurs** de la campagne et produit le **rapport HTML central** : diagnostic, classements, programmes, plan de recommandations, export CSV. Python 2.7 (RHEL 7) ou 3.6+, sans dépendance |
-| `dashboard_kpi.py` | **Tableau de bord KPI pour la direction** : indice de santé, KPI de capacité avec statut et tendance, obsolescence (cycle de vie RHEL, correctifs, abonnement), argumentaire du passage à RHEL 9 relié aux mesures, infrastructure cible calculée, feuille de route, comparaison avant / après. Python 2.7 ou 3.6+, page HTML autonome (thème clair / sombre, impression PDF) |
+| `dashboard_kpi.py` | **Tableau de bord KPI pour la direction** : indice de santé, KPI de capacité avec statut et tendance, obsolescence (cycle de vie RHEL, correctifs, abonnement), argumentaire du passage à RHEL 9 relié aux mesures, renvoi aux prérequis d'infrastructure transmis, feuille de route, comparaison avant / après. Python 2.7 ou 3.6+, page HTML autonome (thème clair / sombre, impression PDF) |
 
 ![Exemple de diagnostic (données simulées)](docs/exemple-diagnostic.png)
 
@@ -154,8 +154,8 @@ python dashboard_kpi.py campagnes/scania-0312 --avant campagnes/scania-2210     
 | Indicateurs clés | CPU, charge, CPU retenu par l'hyperviseur, threads Informix en attente de CPU, mémoire, compactages, swap, temps de réponse disque, iowait, IOPS, espace des dbspaces, cache Informix, lectures, verrous, checkpoints, sessions, latence réseau. Pour chacun : statut, seuil et courbe |
 | Évolution | Courbes interactives : CPU et mémoire par serveur ; disque, lectures, verrous et compactages de la base. Survoler pour lire les valeurs, chaque graphique ayant son tableau de données |
 | Pourquoi passer à RHEL 9 | Une ligne par constat **mesuré** : sécurité et support, maintien en condition (dépôts, correctifs), mémoire, stockage, processeurs, outillage. Chaque ligne précise la limite actuelle, l'apport de RHEL 9 et le gain attendu |
-| Infrastructure cible | vCPU, RAM et stockage par serveur, calculés sur les pics mesurés : CPU à 60 % en pointe, RAM = mémoire Informix + 15 % + réserve système, stockage < 2 ms |
-| Feuille de route | Phase 0 : actions immédiates du diagnostic. Puis maquette RHEL 9, recette IRIUM, bascule par un secondaire Informix synchronisé, mesure avant / après |
+| Infrastructure cible | Renvoi à l'architecture et aux prérequis transmis séparément au client : la nouvelle infrastructure doit les respecter, et les mesures servent de référence avant / après |
+| Feuille de route | Phase 0 : actions immédiates du diagnostic. Puis maquette RHEL 9 conforme aux prérequis transmis, recette IRIUM, bascule par un secondaire Informix synchronisé, mesure avant / après |
 
 Dates de cycle de vie utilisées :
 - **RHEL 7** : fin de la maintenance standard le 30/06/2024, support étendu (ELS) jusqu'au 30/06/2028 ;

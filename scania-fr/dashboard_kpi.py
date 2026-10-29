@@ -11,7 +11,7 @@ Tableau de bord KPI de l'infrastructure IRIUM (Scania France), pour la direction
   - les KPI de capacité (CPU, mémoire, stockage, Informix, réseau), avec leur statut, les seuils et l'évolution ;
   - l'obsolescence : version de RHEL et fin de support, correctifs, abonnement, briques logicielles ;
   - l'argumentaire du passage à RHEL 9 : chaque constat mesuré est relié à l'apport de RHEL 9 ;
-  - le dimensionnement de l'infrastructure cible (CPU, RAM, stockage), calculé à partir des pics mesurés ;
+  - un renvoi à l'architecture cible et aux prérequis transmis séparément ;
   - la feuille de route de la migration, avec les actions immédiates issues du diagnostic.
 Python 2.7 ou 3.6+, aucune dépendance. Réutilise l'analyse de rapport_audit.py, placé dans le même dossier.
 """
@@ -174,7 +174,7 @@ def kpis_serveur(s):
         for e in sr:
             tot[e['ts']] = tot.get(e['ts'], 0) + e['r_s'] + e['w_s']
     iops = stats(list(tot.values()))
-    k['iops'] = {'libelle': 'IOPS (pic)', 'v': iops['max'], 'unite': '', 'statut': 'na', 'seuil': 'dimensionnement', 'serie': sorted(tot.items()), 'detail': 'moyenne %s' % fmt_n(iops['moy'])}
+    k['iops'] = {'libelle': 'IOPS (pic)', 'v': iops['max'], 'unite': '', 'statut': 'na', 'seuil': 'volume de référence', 'serie': sorted(tot.items()), 'detail': 'moyenne %s' % fmt_n(iops['moy'])}
     lat = stats([e['ping_ms'] for e in s['latence']])
     if lat['n']:
         ajoute('reseau', 'Latence vers la base (p95)', lat['p95'], 'ms', niveau(lat['p95'], (0.5, 2, 5)), 'bon < 0,5 ms, critique ≥ 5 ms',
@@ -202,7 +202,7 @@ def kpis_serveur(s):
             ajoute('dbspace', 'Espace libre du dbspace le plus plein', m['libre_pct'], '%', niveau(m['libre_pct'], (20, 10, 1), inverse=True),
                    'bon > 20 %, critique ≤ 1 %', [], m['nom'])
         ses = stats([e.get('actives') for e in s['sessions']])
-        k['sessions'] = {'libelle': 'Sessions Informix (max)', 'v': ses['max'], 'unite': '', 'statut': 'na', 'seuil': 'dimensionnement', 'serie': [(e['ts'], e['actives']) for e in s['sessions']], 'detail': ''}
+        k['sessions'] = {'libelle': 'Sessions Informix (max)', 'v': ses['max'], 'unite': '', 'statut': 'na', 'seuil': 'volume de référence', 'serie': [(e['ts'], e['actives']) for e in s['sessions']], 'detail': ''}
     return k
 
 
@@ -222,7 +222,7 @@ def statut_os(cv, aujourdhui):
 
 
 # --------------------------------------------------------------------------------------------
-# Argumentaire RHEL 9 et dimensionnement cible
+# Argumentaire RHEL 9
 # --------------------------------------------------------------------------------------------
 def argumentaire(serveurs, K, CV, aujourdhui):
     """Lignes (constat mesuré, limite actuelle, apport RHEL 9, gain attendu), seulement quand la mesure le justifie."""
@@ -265,57 +265,6 @@ def argumentaire(serveurs, K, CV, aujourdhui):
                   'Python 2.7 (fin de vie 2020) par défaut', 'Python 3.9 natif, PCP, Cockpit, outils eBPF (bcc, bpftrace) pour l\'observabilité',
                   'Supervision et automatisation modernes (Ansible, scripts d\'exploitation)'))
     return L
-
-
-def arrondi_go(v, pas=8):
-    return int(math.ceil(v / float(pas)) * pas)
-
-
-def dimensionnement(serveurs, K):
-    """Infrastructure cible proposée à partir des pics mesurés (marge de 30 à 40 %)."""
-    lignes = []
-    for s in serveurs:
-        k = K[s['nom']]
-        ram_go = s['mem'][-1]['total_mo'] / 1024.0 if s['mem'] else None
-        cpu_p95 = k['cpu']['v'] or 0
-        ncpu = s['ncpu']
-        cible_cpu = ncpu
-        raisons = []
-        if cpu_p95 > 65 or k.get('file_cpu', {}).get('statut') in ('degrade', 'critique') or (k['charge']['v'] or 0) > 1:
-            cible_cpu = int(math.ceil(ncpu * max(cpu_p95 / 60.0, (k['charge']['v'] or 0) / 0.7, 1.25)))
-            raisons.append('CPU p95 %s %%, charge/CPU p95 %s%s : cible 60 %% d\'utilisation en pointe' % (
-                nombre(cpu_p95), nombre(k['charge']['v'], 2),
-                ', threads Informix en attente de CPU p95 %s pour %s' % (nombre(k['file_cpu']['v']), k['file_cpu']['detail'])
-                if k.get('file_cpu', {}).get('statut') in ('degrade', 'critique') else ''))
-        lignes.append((s['nom'], 'vCPU', str(ncpu), 'CPU p95 %s %%' % nombre(cpu_p95), str(cible_cpu), '; '.join(raisons) or 'Suffisant pour la charge mesurée'))
-        if ram_go:
-            cible = ram_go
-            r = []
-            if s['informix']:
-                bp, virt = memoire_informix_mo(s['conf'])
-                ifx = (bp + virt) / 1024.0
-                besoin = ifx * 1.15 + max(8, 0.2 * ram_go)
-                pression = k.get('compaction', {}).get('statut') in ('vigilance', 'degrade', 'critique') or k['memoire']['statut'] in ('degrade', 'critique')
-                if pression or besoin > ram_go:
-                    cible = max(ram_go * 1.5 if pression else ram_go, besoin)
-                    r.append('Informix verrouille %s Go (BUFFERPOOL %s Go + segment virtuel %s Go) ; %s' % (
-                        nombre(ifx), nombre(bp / 1024.0), nombre(virt / 1024.0), 'pression mémoire du noyau mesurée' if pression else 'marge OS insuffisante'))
-            elif k['memoire']['statut'] in ('degrade', 'critique') or (k['swap']['v'] or 0) > 50:
-                cible = ram_go * 1.5
-                r.append('mémoire disponible min %s %%, swap %s pages/s' % (nombre(k['memoire']['v']), nombre(k['swap']['v'])))
-            lignes.append((s['nom'], 'RAM', '%s Go' % nombre(ram_go, 0), 'disponible min %s %%' % nombre(k['memoire']['v']),
-                           '%d Go' % arrondi_go(cible), '; '.join(r) or 'Suffisante pour la charge mesurée'))
-        if k.get('disque', {}).get('v') is not None:
-            pic = k['iops']['v'] or 0
-            mauvais = k['disque']['statut'] in ('degrade', 'critique')
-            lignes.append((s['nom'], 'Stockage', 'p95 %s ms' % nombre(k['disque']['v']), 'pic %s IOPS' % fmt_n(pic),
-                           '< 2 ms, %s IOPS' % fmt_n(math.ceil(pic * 1.4 / 1000.0) * 1000 if pic else 0) if mauvais else 'inchangé',
-                           ('LUN SSD/NVMe dédiées : données, index, logs logiques/physique et temporaires séparés ; %s' % k['disque']['detail']) if mauvais
-                           else 'Latence correcte'))
-        db = k.get('dbspace')
-        if db and db['statut'] in ('degrade', 'critique'):
-            lignes.append((s['nom'], 'Espace Informix', '%s %% libre' % nombre(db['v']), db['detail'], '≥ 20 % libre', 'Ajout de chunk ou storage pool en extension automatique'))
-    return lignes
 
 
 # --------------------------------------------------------------------------------------------
@@ -544,12 +493,10 @@ def generer(serveurs, sortie, campagne=None, avant=None):
                  '<tr><th>Domaine</th><th>Constat mesuré</th><th>Limite actuelle</th><th>Apport de RHEL 9</th><th>Gain attendu</th></tr>%s</table></div>'
                  '<p class="sub" style="margin-top:10px">Prérequis : version d\'Informix certifiée RHEL 9 (matrice IBM / HCL) et validation de l\'éditeur IRIUM.</p></section>' % ''.join(
                      '<tr><td><b>%s</b></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>' % tuple(esc(x) for x in a) for a in arg))
-    # 6. dimensionnement
-    dim = dimensionnement(serveurs, K)
-    o.append('<section><h2>Infrastructure cible proposée</h2><p class="intro">Calculée à partir des pics mesurés, avec une marge de 30 à 40 %% : '
-             'CPU visé à 60 %% en pointe, RAM = mémoire Informix + 15 %% + réserve système, stockage < 2 ms.</p><div class="tw"><table>'
-             '<tr><th>Serveur</th><th>Ressource</th><th>Actuel</th><th>Mesuré</th><th>Cible</th><th>Justification</th></tr>%s</table></div></section>' % ''.join(
-                 '<tr><td>%s</td><td><b>%s</b></td><td>%s</td><td>%s</td><td><b>%s</b></td><td>%s</td></tr>' % tuple(esc(x) for x in l) for l in dim))
+    # 6. infrastructure cible : définie séparément (architecture et prérequis transmis au client)
+    o.append('<section><h2>Infrastructure cible</h2><p class="intro" style="margin:0">L\'architecture cible et les prérequis ont été transmis séparément. '
+             'La nouvelle infrastructure devra <b>respecter ces prérequis</b> ; les mesures de ce tableau de bord servent de référence pour la valider '
+             '(même campagne d\'audit avant et après, option --avant).</p></section>')
     # 7. avant / après
     if avant:
         Ka = dict((s['nom'], kpis_serveur(s)) for s in avant)
@@ -568,7 +515,7 @@ def generer(serveurs, sortie, campagne=None, avant=None):
     imm = [x for x in plan if x['prio'] in ('Immédiat', 'P1')][:6]
     o.append('<section><h2>Feuille de route proposée</h2><div class="road">'
              '<div><b>Phase 0 · tout de suite</b><ul>%s</ul></div>'
-             '<div><b>Phase 1 · maquette</b><ul><li>Serveur RHEL 9 dimensionné (tableau ci-dessus)</li><li>Informix en version certifiée RHEL 9, ONCONFIG revu</li>'
+             '<div><b>Phase 1 · maquette</b><ul><li>Serveurs RHEL 9 conformes à l\'architecture et aux prérequis transmis</li><li>Informix en version certifiée RHEL 9, ONCONFIG revu</li>'
              '<li>Audit de référence sur la maquette</li></ul></div>'
              '<div><b>Phase 2 · recette</b><ul><li>Recette IRIUM avec l\'éditeur (programmes Genero, ipscrond)</li><li>Tests de charge sur les traitements critiques</li></ul></div>'
              '<div><b>Phase 3 · bascule</b><ul><li>Nouveau serveur ajouté comme secondaire de %s, synchronisé en continu</li>'
