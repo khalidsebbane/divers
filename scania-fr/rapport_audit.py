@@ -1962,7 +1962,7 @@ def diagnostic(s):
                                                                  '%.1f' % x['ecr_ms'] if x['ecr_ms'] is not None else '-') for x in lents[:5]),
                 'Temps moyen par I/O mesuré par Informix supérieur à 20 ms : stockage sous-dimensionné ou mal réparti.')
         for e in s['repl'][-1:]:
-            if e[2].lower() != 'on':
+            if e[2].lower() != 'on' and not nb_rss(s['dossier']):   # avec un secondaire RSS, HDR « off » est normal
                 add('haute', 'Réplication', 'Réplication HDR non active', 'type %s, état %s, serveur apparié %s' % (e[1], e[2], e[3]),
                     'Vérifier la liaison avec la réplica (onstat -g dri, journal du moteur).')
         bl = stats([x['backlog'] for x in s['backlog']])
@@ -2761,11 +2761,22 @@ def ouvrir_source(chemin, tmp):
     return chemin
 
 
-def main():
-    if PY2 and not getattr(sys.stdout, 'encoding', None) or (PY2 and sys.stdout.encoding.lower() not in ('utf-8', 'utf8')):
+def sortie_utf8():
+    """Affichage UTF-8 même sous LC_ALL=C (cas d'audit-irium.sh), en Python 2 comme en Python 3.6."""
+    enc = (getattr(sys.stdout, 'encoding', None) or '').lower().replace('-', '')
+    if enc == 'utf8':
+        return
+    if PY2:
         import codecs
         sys.stdout = codecs.getwriter('utf-8')(sys.stdout)
         sys.stderr = codecs.getwriter('utf-8')(sys.stderr)
+    else:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+
+
+def main():
+    sortie_utf8()
     p = argparse.ArgumentParser(description='Rapport d\'audit de performance IRIUM / Informix')
     p.add_argument('sources', nargs='+', help='Dossier de campagne (partage), dossiers ou archives .tar.gz produits par audit-irium.sh')
     p.add_argument('-o', '--sortie', help='fichier HTML (défaut : dossier de rapport_audit.py)',

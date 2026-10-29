@@ -551,10 +551,7 @@ def charger_sources(sources, tmp):
 
 
 def main():
-    if PY2 and (not getattr(sys.stdout, 'encoding', None) or sys.stdout.encoding.lower() not in ('utf-8', 'utf8')):
-        import codecs
-        sys.stdout = codecs.getwriter('utf-8')(sys.stdout)
-        sys.stderr = codecs.getwriter('utf-8')(sys.stderr)
+    ra.sortie_utf8()
     p = argparse.ArgumentParser(description='Tableau de bord KPI de l\'infrastructure IRIUM')
     p.add_argument('sources', nargs='+', help='Dossier de campagne, dossiers ou archives .tar.gz d\'audit-irium.sh')
     p.add_argument('--avant', nargs='+', help='Audit de référence (comparaison avant / après)')

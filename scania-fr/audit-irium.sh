@@ -587,7 +587,7 @@ generer_dashboard() {   # generer_dashboard <source : dossier d'audit ou de camp
   local py d; d="$(dirname "$SCRIPT")/dashboard_kpi.py"
   [ -f "$d" ] || return 0
   py="$(trouver_python)" || return 0
-  if timeout 600 nice -n 19 $py "$d" "$1" -o "$(dirname "$SCRIPT")/dashboard_$2.html" >> "${DOSSIER:-$1}/journal.txt" 2>&1; then
+  if PYTHONIOENCODING=utf-8 timeout 600 nice -n 19 $py "$d" "$1" -o "$(dirname "$SCRIPT")/dashboard_$2.html" >> "${DOSSIER:-$1}/journal.txt" 2>&1; then
     journal "Tableau de bord : $(dirname "$SCRIPT")/dashboard_$2.html"
   else
     journal "Échec du tableau de bord (voir journal.txt)"
@@ -616,7 +616,7 @@ generer_rapport() {
   local py r; r="$(dirname "$SCRIPT")/rapport_audit.py"
   [ -f "$r" ] || { journal "rapport_audit.py absent à côté du script : rapport non généré"; return 0; }
   py="$(trouver_python)" || { journal "Python 2.7 ou 3.6+ absent : générer le rapport sur un autre poste (rapport_audit.py <archive>)"; return 0; }
-  if timeout 600 $py "$r" "$DOSSIER" -o "$DOSSIER/rapport_${HOTE}.html" >> "$DOSSIER/journal.txt" 2>&1; then
+  if PYTHONIOENCODING=utf-8 timeout 600 $py "$r" "$DOSSIER" -o "$DOSSIER/rapport_${HOTE}.html" >> "$DOSSIER/journal.txt" 2>&1; then
     journal "Rapport : $DOSSIER/rapport_${HOTE}.html (recommandations en fin de rapport)"
     copier_rapport "$DOSSIER/rapport_${HOTE}.html" "rapport_${HOTE}_$(basename "$DOSSIER" | sed "s/^${HOTE}_//")"
     generer_dashboard "$DOSSIER" "${HOTE}_$(basename "$DOSSIER" | sed "s/^${HOTE}_//")"
@@ -676,7 +676,7 @@ rapport_central() {   # rapport_central [final|periodique]
     [ "${1:-}" = periodique ] && return 0
     n=$((n + 1)); [ "$n" -gt 60 ] && return 0; sleep 5
   done
-  if timeout 900 nice -n 19 $py "$r" "$c" -o "$sortie" > "$c/.rapport_${HOTE}.log" 2>&1; then
+  if PYTHONIOENCODING=utf-8 timeout 900 nice -n 19 $py "$r" "$c" -o "$sortie" > "$c/.rapport_${HOTE}.log" 2>&1; then
     journal "Rapport central mis à jour : $sortie"
     copier_rapport "$sortie" "rapport_${CAMPAGNE}"
     generer_dashboard "$c" "$CAMPAGNE"
@@ -753,7 +753,7 @@ cmd_campagne() {
       ;;
     rapport)
       local py; py="$(trouver_python)" || { echo "Python 2.7 ou 3.6+ requis sur ce serveur pour générer le rapport." >&2; exit 1; }
-      $py "$PARTAGE/rapport_audit.py" "$c" -o "$c/rapport_${CAMPAGNE}.html"
+      PYTHONIOENCODING=utf-8 $py "$PARTAGE/rapport_audit.py" "$c" -o "$c/rapport_${CAMPAGNE}.html"
       DOSSIER="$c" copier_rapport "$c/rapport_${CAMPAGNE}.html" "rapport_${CAMPAGNE}"
       DOSSIER="$c" generer_dashboard "$c" "$CAMPAGNE"
       ;;

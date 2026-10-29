@@ -407,3 +407,20 @@ def test_dashboard_kpi(tmp_path):
     assert 0 <= score < 80 and 'Pourquoi passer à RHEL 9' in h and 'respecter ces prérequis' in h and 'Feuille de route' in h
     score2, _ = dk.generer([s], str(tmp_path / 'dash2.html'), avant=[s])
     assert 'Avant / après' in open(str(tmp_path / 'dash2.html'), encoding='utf-8').read()
+
+
+def test_sortie_ascii_lc_all_c(tmp_path):
+    """Sous LC_ALL=C, Python 3.6 (rh-python36) écrit en ASCII : les accents ne doivent pas faire échouer le rapport."""
+    d = str(tmp_path / 'srv')
+    fabriquer(d)
+    with open(os.path.join(d, 'statique', 'informix', 'onstat__g_rss.txt'), 'w') as f:
+        f.write('Local server type: Primary\nNumber of RSS servers: 1\n')
+    with open(os.path.join(d, 'informix', 'onstat_dri.raw'), 'w') as f:
+        f.write(bloc(0, '  Type           State        Paired server\n  primary        off          ol_x0297se\n'))
+    env = dict(os.environ, LC_ALL='C', LANG='C', PYTHONIOENCODING='ascii')
+    ici = os.path.join(os.path.dirname(__file__), '..')
+    for script, sortie in (('rapport_audit.py', 'r.html'), ('dashboard_kpi.py', 'd.html')):
+        p = subprocess.run([sys.executable, os.path.join(ici, script), d, '-o', str(tmp_path / sortie)],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+        assert p.returncode == 0, p.stdout.decode('utf-8', 'replace')
+    assert 'Réplication HDR non active' not in {c[2] for c in r.diagnostic(r.charger(d))}   # secondaire RSS : HDR « off » normal
