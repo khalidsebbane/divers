@@ -15,7 +15,8 @@
 #   ./audit-irium.sh marquer "lenteur saisie commande agence Lyon"   signalement utilisateur (depuis n'importe quel serveur)
 #   ./audit-irium.sh campagne rapport [nom]         rapport CENTRAL à tout moment (données partielles ou finales)
 #   ./audit-irium.sh campagne arreter [nom]         arrêt anticipé de tous les serveurs
-#   Tableau de bord KPI (direction) : <dossier du script>/dashboard_<nom>.html, généré avec chaque rapport
+#   Tableau de bord KPI (direction) : <dossier du script>/dashboard_<nom>.html et présentation client
+#   presentation_<nom>.html (logos dans assets/), générés avec chaque rapport
 #   (ou : python dashboard_kpi.py <campagne> [--avant <campagne de référence>])
 #   Résultat : <partage>/campagnes/<nom>/rapport_<nom>.html : un seul rapport pour tous les serveurs, régénéré
 #   automatiquement pendant la campagne et à la fin ; données de chaque serveur dans <partage>/campagnes/<nom>/<serveur>/.
@@ -589,6 +590,9 @@ generer_dashboard() {   # generer_dashboard <source : dossier d'audit ou de camp
   py="$(trouver_python)" || return 0
   if PYTHONIOENCODING=utf-8 timeout 600 nice -n 19 $py "$d" "$1" -o "$(dirname "$SCRIPT")/dashboard_$2.html" >> "${DOSSIER:-$1}/journal.txt" 2>&1; then
     journal "Tableau de bord : $(dirname "$SCRIPT")/dashboard_$2.html"
+    local pr; pr="$(dirname "$SCRIPT")/presentation_client.py"
+    [ -f "$pr" ] && PYTHONIOENCODING=utf-8 timeout 600 nice -n 19 $py "$pr" "$1" -o "$(dirname "$SCRIPT")/presentation_$2.html" >> "${DOSSIER:-$1}/journal.txt" 2>&1 \
+      && journal "Présentation client : $(dirname "$SCRIPT")/presentation_$2.html"
   else
     journal "Échec du tableau de bord (voir journal.txt)"
   fi
@@ -760,7 +764,7 @@ cmd_campagne() {
     arreter)
       touch "$c/ARRET" && echo "Arrêt demandé : chaque serveur termine son relevé en cours, synchronise ses données puis le rapport central est produit."
       ;;
-    *) sed -n '3,36p' "$SCRIPT"; exit 1 ;;
+    *) sed -n '3,37p' "$SCRIPT"; exit 1 ;;
   esac
 }
 
@@ -929,5 +933,5 @@ case "$ACTION" in
   statut) cmd_statut ;;
   arreter) cmd_arreter ;;
   _executer) executer_supervision ;;  # interne
-  *) sed -n '3,36p' "$0"; exit 1 ;;
+  *) sed -n '3,37p' "$0"; exit 1 ;;
 esac

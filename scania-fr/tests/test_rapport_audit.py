@@ -424,3 +424,27 @@ def test_sortie_ascii_lc_all_c(tmp_path):
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
         assert p.returncode == 0, p.stdout.decode('utf-8', 'replace')
     assert 'Réplication HDR non active' not in {c[2] for c in r.diagnostic(r.charger(d))}   # secondaire RSS : HDR « off » normal
+
+
+def test_presentation_client(tmp_path):
+    import dashboard_kpi as dk
+    import presentation_client as pc
+    d = str(tmp_path / 'srv')
+    fabriquer(d)
+    fabriquer_objets(d)
+    s = r.charger(d)
+    # depuis les données d'audit
+    m = pc.modele_audit([s])
+    n = pc.rendre(m, str(tmp_path / 'p1.html'))
+    h = open(str(tmp_path / 'p1.html'), encoding='utf-8').read()
+    assert n == 12 and 'data:image/png;base64,' in h and 'Décisions attendues' in h
+    # depuis les deux pages HTML (rapport + tableau de bord), comme avec --html
+    r.generer([s], str(tmp_path / 'rapport.html'))
+    dk.generer([s], str(tmp_path / 'dashboard.html'))
+    m2 = pc.modele_html(str(tmp_path / 'rapport.html'), str(tmp_path / 'dashboard.html'))
+    assert m2['score'] == m['score'] and m2['prio'] == m['prio'] and len(m2['plan']) == len(m['plan'])
+    assert m2['kpis'] and all(k['libelle'] for k in m2['kpis'])
+    assert pc.nettoyer("sav_evt : 599,4 M pages, 41 scans, hit ratio 0 % ; 0.0 % d'espace libre") == "sav_evt : 599,4 M pages, 41 scans ; < 0,1 % d'espace libre"
+    pc.rendre(m2, str(tmp_path / 'p2.html'))
+    h2 = open(str(tmp_path / 'p2.html'), encoding='utf-8').read()
+    assert 'Constats majeurs' in h2 and 'Feuille de route' in h2 and 'respecter' in h2

@@ -685,6 +685,8 @@ def objets(d, inv, uptime_s=None):
         base, nom = cle
         c = dict(fin.get(cle) or dict((k, 0.0) for k in PPF))
         c['pagreads'] = pf.get(cle)
+        if c['pagreads'] is not None and c['bfrd'] > 0:   # taux de lecture en cache calculé (la colonne rhitratio de onstat -g ppf est peu fiable)
+            c['rhit'] = max(0.0, min(100.0, 100.0 * (1 - c['pagreads'] / c['bfrd'])))
         dlt = {}
         if deb is not None and cle in deb and duree > 0 and c['bfrd'] >= deb[cle]['bfrd']:
             dlt = dict((k, c[k] - deb[cle][k]) for k in PPF if k != 'rhit')
@@ -890,7 +892,7 @@ def regles_objets(s):
         else:
             continue
         r.append((g, 'Stockage Informix', 'Dbspace %s presque plein' % db['nom'],
-                  '%.1f %% d\'espace libre (%s pages libres sur %s, %d chunk(s))' % (db['libre_pct'], fmt_n(db['libres']), fmt_n(db['pages']), db['chunks']),
+                  '%s %% d\'espace libre (%s pages libres sur %s, %d chunk(s))' % (('%.2f' if db['libre_pct'] < 1 else '%.1f') % db['libre_pct'], fmt_n(db['libres']), fmt_n(db['pages']), db['chunks']),
                   'Les allocations d\'extents peuvent échouer et provoquer des erreurs applicatives : ajouter un chunk (onspaces -a) ou activer l\'extension '
                   'automatique via un storage pool (SP_AUTOEXPAND).'))
     ext = sorted([(k, v) for k, v in inv.get('tailles', {}).items() if v['nextns'] >= 50], key=lambda x: -x[1]['nextns'])

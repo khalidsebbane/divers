@@ -12,6 +12,7 @@ Les recommandations sont **calculées à partir des mesures** de la campagne et 
 | `audit-irium.sh` | Collecte en **lecture seule** sur chaque serveur et pilotage de la campagne (démarrer, état, signalements, rapport, arrêt). Bash, sans dépendance |
 | `rapport_audit.py` | Analyse les données de **tous les serveurs** de la campagne et produit le **rapport HTML central** : diagnostic, classements, programmes, plan de recommandations, export CSV. Python 2.7 (RHEL 7) ou 3.6+, sans dépendance |
 | `dashboard_kpi.py` | **Tableau de bord KPI pour la direction** : indice de santé, KPI de capacité avec statut et tendance, obsolescence (cycle de vie RHEL, correctifs, abonnement), argumentaire du passage à RHEL 9 relié aux mesures, renvoi aux prérequis d'infrastructure transmis, feuille de route, comparaison avant / après. Python 2.7 ou 3.6+, page HTML autonome (thème clair / sombre, impression PDF) |
+| `presentation_client.py` | **Présentation client** (diaporama HTML, 12 diapositives) aux couleurs IRIUM, avec les logos Scania et IRIUM (`assets/`) : fusion du rapport et du tableau de bord. Navigation au clavier, plein écran (F), export PDF une diapositive par page |
 
 ![Exemple de diagnostic (données simulées)](docs/exemple-diagnostic.png)
 
@@ -163,6 +164,30 @@ Dates de cycle de vie utilisées :
 - **RHEL 9** : maintenance jusqu'au 31/05/2032.
 
 Prérequis à valider avant la migration : la version d'Informix certifiée sur RHEL 9 (matrice IBM / HCL) et l'accord de l'éditeur IRIUM.
+
+## Présentation client
+
+Elle est générée automatiquement avec le rapport et le tableau de bord : `/msdos/ks/scania-fr/presentation_<nom>.html`. Pour la produire à la main :
+```bash
+python presentation_client.py campagnes/scania-2210                     # depuis les données d'audit
+python presentation_client.py --html rapport_x.html dashboard_x.html    # depuis les deux pages déjà générées
+```
+
+Les 12 diapositives :
+1. Couverture ;
+2. Sommaire ;
+3. Contexte et méthode ;
+4. Synthèse (indice de santé, priorités) ;
+5. Indicateurs clés ;
+6. Constats majeurs ;
+7. Base Informix (lectures physiques, scans coûteux) ;
+8. Obsolescence ;
+9. Pourquoi passer à RHEL 9 ;
+10. Plan d'actions ;
+11. Feuille de route et infrastructure cible (prérequis transmis) ;
+12. Décisions attendues.
+
+Navigation : ← →, F pour le plein écran, bouton PDF (impression au format 16:9).
 
 ## Lire le rapport
 

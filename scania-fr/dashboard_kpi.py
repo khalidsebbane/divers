@@ -65,7 +65,7 @@ def nombre(v, dec=1):
         return '–'
     if abs(v) >= 10000:
         return fmt_n(v)
-    s = ('%.' + str(dec) + 'f') % v if abs(v) < 100 else '%.0f' % v
+    s = ('%.' + str(dec if abs(v) >= 1 or v == 0 else 2) + 'f') % v if abs(v) < 100 else '%.0f' % v
     if '.' in s:
         s = s.rstrip('0').rstrip('.')
     return s.replace('.', ',')
@@ -103,7 +103,11 @@ def cycle_de_vie(s):
     if '== Dépôts actifs' in t:
         dp = t.split('== Dépôts actifs')[1].split('==')[0]
         r['depots'] = None if not dp.strip() or re.search(r'(?i)failed to run command|command not found|No such file', dp) else ('aucun' if re.search(r'(?i)repolist: 0|no enabled|there are no enabled', dp) else 'présents')
-    r['python'] = re.findall(r'^(?:python\w*|platform-python)=(.+)$', t, re.M) + ['SCL ' + os.path.basename(x) for x in re.findall(r'^scl=(.+)$', t, re.M)]
+    vus = []
+    for x in re.findall(r'^(?:python\w*|platform-python)=(.+)$', t, re.M) + ['SCL ' + os.path.basename(x) for x in re.findall(r'^scl=(.+)$', t, re.M)]:
+        if x.strip() not in vus:
+            vus.append(x.strip())
+    r['python'] = vus
     m = re.search(r'^openssl=(.+)$', t, re.M)
     r['openssl'] = m.group(1).strip() if m and m.group(1).strip() else None
     return r
@@ -237,7 +241,9 @@ def argumentaire(serveurs, K, CV, aujourdhui):
     sans = [n for n, c in CV.items() if c['depots'] == 'aucun' or (c['abonnement'] or '').startswith('expiré')]
     vieux = [(n, c['derniere_maj']) for n, c in CV.items() if c['derniere_maj'] and (aujourdhui - c['derniere_maj']).days > 180]
     if sans or vieux:
-        L.append(('Maintien en condition', '; '.join(['%s : aucun dépôt actif / abonnement non valide' % n for n in sans] +
+        cause = lambda c: ', '.join(x for x in ('abonnement Red Hat non valide' if (c['abonnement'] or '').startswith('expiré') else '',
+                                               'aucun dépôt actif' if c['depots'] == 'aucun' else '') if x)
+        L.append(('Maintien en condition', '; '.join(['%s : %s' % (n, cause(CV[n])) for n in sans] +
                                                     ['%s : derniers paquets installés le %s' % (n, d.strftime('%d/%m/%Y')) for n, d in vieux]),
                   'Impossible d\'installer un correctif ou un outil (ex. python3 refusé faute de dépôt)',
                   'Abonnement RHEL 9 et dépôts BaseOS / AppStream ; Satellite déjà présent chez Scania',
