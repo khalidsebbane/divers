@@ -48,8 +48,3 @@ CREDENTIALS_FILE="/root/ie_identifiants.txt"
 ECW_USER=""
 ECW_PASSWORD=""
 DL_VERIFY_TLS="non"              # « oui » dès que le certificat du portail est reconnu
-
-# --- Licence Genero / 4js (SECRETS) -----------------------------------------------------------
-GENERO_LICENCE_NUMERO=""         # ex. TAB#XXXXXXXX
-GENERO_LICENCE_CLE=""
-GENERO_CLIENT=""                 # identifiant client 4js

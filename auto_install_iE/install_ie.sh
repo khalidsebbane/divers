@@ -2,7 +2,7 @@
 # =============================================================================================
 #  install_ie.sh : préparation automatique d'un serveur iE / IRIUM (RHEL 9)
 #
-#  Disques LVM, dossiers, comptes, SSH, Samba, Genero + licences, Java, Informix 14.10 FC13
+#  Disques LVM, dossiers, comptes, SSH, Samba, Genero, Java, Informix 14.10 FC13
 #  (installation, configuration, initialisation), dump, version i80 v3300 et préparation de
 #  la migration depuis l'ancien serveur.
 #
@@ -18,7 +18,7 @@ shopt -s inherit_errexit 2>/dev/null || true
 umask 027
 export LVM_SUPPRESS_FD_WARNINGS=1   # descripteur du verrou hérité par les commandes LVM
 
-readonly SCRIPT_VERSION="6.1.1"
+readonly SCRIPT_VERSION="6.2.0"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 readonly SCRIPT_NAME SCRIPT_DIR
@@ -95,10 +95,6 @@ URL_SCRIPTO="https://ecw.irium-france.com/ECMIrium/IRIUM Releases/iPro/His/scrip
 URL_INFORMIX="https://ecw.irium-france.com/ECMIrium/IRIUM Releases/iPro/His/Informix_fc13_Irium_Installer.tgz"
 URL_V3300="https://ecw.irium-france.com/ECMIrium/IRIUM_Releases/i80/Release/i80_v3300.sh"
 
-GENERO_LICENCE_NUMERO=""
-GENERO_LICENCE_CLE=""
-GENERO_CLIENT=""
-LICENCE_HOTE="4js.com"
 
 LANCER_DUMP="demander"           # oui | non | demander
 INSTALLER_V3300="demander"       # oui | non | demander
@@ -498,7 +494,7 @@ declare -A DESC_ETAPE=(
     [comptes]="Comptes msdos/supie/cslie, mots de passe, Samba, home de manager"
     [systeme]="/etc/hosts, expect, couleur du prompt"
     [scripto]="Téléchargement de scripto"
-    [genero]="Genero, Java 8, licences fgl et flm"
+    [genero]="Genero et Java 8"
     [archivage]="archivage_ids (dump commenté), /var/log/backup_ids.log"
     [services]="GAS, compte strs"
     [informix_install]="Installation Informix 14.10 FC13 et Client SDK"
@@ -923,62 +919,6 @@ etape_scripto() {
 }
 
 # --------------------------------------------------------------------------------------------
-ecrire_licence_fgl() {
-    ecrire_fichier "$IRIUM_DIR/fglgws/bin/newlicence" 0700 root:root <<EOFLIC
-#!/bin/sh
-# Renouvellement de la licence Genero fgl (généré par $SCRIPT_NAME le $(date +%F))
-FGLDIR=$IRIUM_DIR/fglgws
-export FGLDIR
-PATH=\$PATH:\$FGLDIR/bin
-export PATH
-
-fglWrt -d <<EOF2 >/dev/null 2>&1
-y
-EOF2
-
-fglWrt -l <<EOF3 >/dev/null 2>&1
-
-$GENERO_LICENCE_NUMERO P
-$GENERO_LICENCE_CLE 2
-n
-EOF3
-
-fglWrt -m auto <<EOF4 >/dev/null 2>&1
-$GENERO_CLIENT
-n
-EOF4
-EOFLIC
-}
-
-ecrire_licence_flm() {
-    ecrire_fichier "$IRIUM_DIR/flm/bin/newlicence" 0700 root:root <<EOFLIC
-#!/bin/bash
-# Renouvellement de la licence Genero License Server (généré par $SCRIPT_NAME le $(date +%F))
-FLMDIR="$IRIUM_DIR/flm"
-export FLMDIR
-PATH="\$FLMDIR/bin:\$PATH"
-export PATH
-
-flmprg -d $GENERO_LICENCE_NUMERO <<EOF2 >/dev/null 2>&1
-yes
-EOF2
-flmprg -l <<EOF3 >/dev/null 2>&1
-
-$GENERO_LICENCE_NUMERO P
-$GENERO_LICENCE_CLE 2
-no
-
-
-stop
-EOF3
-flmprg -m $GENERO_LICENCE_NUMERO auto <<EOF4 >/dev/null 2>&1
-yes
-$GENERO_CLIENT
-no
-EOF4
-EOFLIC
-}
-
 etape_genero() {
     local archive
     case "$VERSION_GENERO" in
@@ -1006,34 +946,6 @@ etape_genero() {
     (( SIMULATION )) || [[ -x "$JAVA8_PATH" ]] || die "Java 8 introuvable : $JAVA8_PATH"
     run alternatives --set java "$JAVA8_PATH"
     (( SIMULATION )) || java -version 2>&1 | head -1 || true
-
-    # Licences
-    demander_secret GENERO_LICENCE_NUMERO "Numéro de licence Genero (ex : TAB#XXXXXXXX)"
-    demander_secret GENERO_LICENCE_CLE "Clé de licence Genero"
-    demander_secret GENERO_CLIENT "Identifiant client 4js"
-    ecrire_licence_fgl
-    ecrire_licence_flm
-
-    if port_accessible "$LICENCE_HOTE" 443; then
-        ok "$LICENCE_HOTE:443 accessible : activation des licences."
-        run sh "$IRIUM_DIR/fglgws/bin/newlicence" || warn "Licence fgl : code retour non nul."
-        run sh "$IRIUM_DIR/flm/bin/newlicence"    || warn "Licence flm : code retour non nul."
-    else
-        warn "$LICENCE_HOTE:443 inaccessible : licences à activer plus tard avec les scripts newlicence."
-    fi
-
-    local ligne_cron="0 21 * * 0 $IRIUM_DIR/fglgws/bin/newlicence # a enlever après migration"
-    if crontab -l 2>/dev/null | grep -Fq "$IRIUM_DIR/fglgws/bin/newlicence"; then
-        log "Tâche cron de la licence fgl déjà présente."
-    elif (( SIMULATION )); then
-        log "[SIMU] ajout cron : $ligne_cron"
-    else
-        { crontab -l 2>/dev/null || true; echo "$ligne_cron"; } | crontab -
-        ok "Tâche cron de la licence fgl ajoutée (dimanche 21 h)."
-    fi
-
-    run_as regix "fglWrt -a see" || warn "fglWrt -a see en échec."
-    run env PATH="$IRIUM_DIR/flm/bin:$PATH" FLMDIR="$IRIUM_DIR/flm" flmprg -a see || warn "flmprg -a see en échec."
 }
 
 # --------------------------------------------------------------------------------------------
@@ -1464,8 +1376,6 @@ EOF
 # À lancer en root sur le NOUVEAU serveur, une fois l'accès SSH vers « oldsrv » validé.
 set -euo pipefail
 ssh -o BatchMode=yes oldsrv true
-rsync -avH oldsrv:$IRIUM_DIR/fglgws/bin/newlicence $IRIUM_DIR/fglgws/bin/newlicence
-sh $IRIUM_DIR/fglgws/bin/newlicence
 rsync -aH oldsrv:/users/ /users/ > $LOG_DIR/rsync_users.log 2>&1 &
 rsync -aH oldsrv:/msdos/ /msdos/ > $LOG_DIR/rsync_msdos.log 2>&1 &
 wait
@@ -1522,11 +1432,6 @@ preparer_automatisation() {
        || { etape_prevue v3300 && [[ "${INSTALLER_V3300,,}" == "oui" && ! -s "$V3300_BINAIRE" ]]; }; then
         demander_secret ECW_USER "Utilisateur du portail ECW IRIUM"
         demander_secret ECW_PASSWORD "Mot de passe du portail ECW IRIUM"
-    fi
-    if etape_prevue genero; then
-        demander_secret GENERO_LICENCE_NUMERO "Numéro de licence Genero (ex : TAB#XXXXXXXX)"
-        demander_secret GENERO_LICENCE_CLE "Clé de licence Genero"
-        demander_secret GENERO_CLIENT "Identifiant client 4js"
     fi
 
     section "Déroulement prévu"

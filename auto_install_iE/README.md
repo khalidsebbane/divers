@@ -3,7 +3,7 @@
 Script d'installation d'un nouveau serveur **iE / IRIUM sous RHEL 9**. Il prépare :
 - le stockage (disques LVM) ;
 - les comptes ;
-- Genero et ses licences ;
+- Genero et Java 8 ;
 - Informix 14.10 FC13 ;
 - la version i80 v3300 ;
 - la migration depuis l'ancien serveur.
@@ -53,7 +53,7 @@ Au lancement réel, **toutes les questions sont posées au début** :
 - dump et v3300 ;
 - volume dédié à `/var/log` ;
 - effacement éventuel du disque ;
-- secrets ECW et licence Genero, en saisie masquée.
+- identifiants du portail ECW, en saisie masquée.
 
 Le script affiche ensuite le déroulement prévu et demande **une seule confirmation**. À partir de là, l'installation se déroule **sans aucune intervention** jusqu'à la fin. Seul l'affichage des identifiants, tout à la fin, est proposé.
 
@@ -75,7 +75,8 @@ sudo ./install_ie.sh --oui
   - les modèles `informix` et `param_ids` ;
   - éventuellement `Informix_fc13_Irium_Installer.tgz`. S'il est absent, il est téléchargé depuis le portail ECW.
 - Un disque vide dédié aux données (par défaut `/dev/sdb`).
-- Un accès au portail ECW IRIUM et à `4js.com:443` pour les licences. Sans accès, les licences s'activeront plus tard avec les scripts `newlicence` générés.
+- Un accès au portail ECW IRIUM (téléchargement de scripto, d'Informix si absent, de la v3300).
+- **Les licences Genero (fgl, flm) ne sont pas gérées par le script** : à installer à part.
 
 ## Options
 
@@ -105,7 +106,7 @@ En mode `--oui`, l'effacement d'un disque qui porte des signatures exige en plus
 | `comptes` | `msdos`, `supie`, `cslie` ; mots de passe aléatoires ; Samba ; home de `manager` |
 | `systeme` | `/etc/hosts`, `expect`, couleur du prompt |
 | `scripto` | téléchargement de `scripto` et alias |
-| `genero` | Genero 2 ou 3, Java 8, scripts de licence fgl et flm, tâche cron |
+| `genero` | Genero 2 ou 3, Java 8 (licences Genero non gérées) |
 | `archivage` | `archivage_ids` (dump commenté), `/var/log/backup_ids.log` |
 | `services` | droits des sessions GAS, redémarrage de `gas`, compte `strs` |
 | `informix_install` | dépendances, Java 11 temporaire, IDS 14.10 FC13 et Client SDK (installation silencieuse) |
@@ -125,7 +126,7 @@ L'instance Informix s'appelle `ol_<nom court du serveur>`, en minuscules et sans
 
 ## Sécurité
 
-- **Aucun secret dans le script ni dans le dépôt.** Les mots de passe ECW et les licences Genero sont dans `install_ie.conf`, ignoré par git. Le script avertit si ce fichier n'est pas en droits 600.
+- **Aucun secret dans le script ni dans le dépôt.** Les identifiants ECW sont dans `install_ie.conf`, ignoré par git. Le script avertit si ce fichier n'est pas en droits 600.
 - **Le mot de passe ECW n'apparaît plus dans `ps`.** Il passe par un `wgetrc` temporaire, supprimé en fin d'exécution.
 - **Les mots de passe des comptes ne sont jamais écrits dans le journal.** Ils sont générés aléatoirement (16 caractères, 4 classes) et enregistrés dans `/root/ie_identifiants.txt` (droits 600). En fin d'exécution, le script propose de les afficher à l'écran, hors journal, pour les reporter dans LockSelf. **Supprimer ensuite ce fichier** :
 
@@ -156,7 +157,7 @@ L'instance Informix s'appelle `ol_<nom court du serveur>`, en minuscules et sans
 | Problème v5 | Correction |
 |---|---|
 | Fins de ligne Windows (CRLF) | LF, imposé par `.gitattributes` |
-| Mot de passe ECW et clés de licence en clair dans le script | Fichier de configuration local, hors git, ou saisie masquée |
+| Mot de passe ECW et clés de licence Genero en clair dans le script | Fichier de configuration local, hors git, ou saisie masquée ; partie licence Genero retirée |
 | Mots de passe affichés dans le journal (`cat /root/.msdospwd`, `cat pwd`) | Fichier 600 dédié, affichage hors journal |
 | Fichier `pwd` écrit dans le dossier courant mais relu dans `/root/pwd` | Un seul fichier, `CREDENTIALS_FILE` |
 | `n)²` dans le `case` de `/var/log` (commande `²` introuvable) | Supprimé |
