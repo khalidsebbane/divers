@@ -289,6 +289,7 @@ def assembler(conf, partage, maintenant=None, demo=False):
     serveurs, alertes, taches, connexions, liens = [], [], [], None, []
     liste = serveurs_conf(conf)
     hotes = dict((x['hote'].split('.')[0].lower(), x['nom']) for x in liste)
+    hotes.update((x['ip'], x['nom']) for x in liste if x.get('ip'))
     for srv in liste:
         dossier = os.path.join(partage, 'donnees', srv['nom'])
         snap = lire_json(os.path.join(dossier, 'dernier.json'))

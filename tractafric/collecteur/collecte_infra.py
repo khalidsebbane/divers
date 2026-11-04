@@ -53,22 +53,35 @@ def lire_conf(chemin):
 
 
 def serveurs_conf(conf):
-    """SERVEURS="BDD:srv-bdd01:bdd REPL:srv-bdd02:repl APP1:srv-app01:app ..." -> liste de dicts."""
+    """SERVEURS="BDD:srv-bdd01:bdd:10.0.1.11 REPL:srv-bdd02:repl:10.0.1.12 ..." -> liste de dicts (IP facultative)."""
     res = []
     for item in conf.get('SERVEURS', '').split():
         p = item.split(':')
         if len(p) >= 3:
-            res.append({'nom': p[0], 'hote': p[1], 'role': p[2].lower()})
+            res.append({'nom': p[0], 'hote': p[1], 'role': p[2].lower(), 'ip': p[3] if len(p) > 3 else ''})
     return res
+
+
+def adresses_locales():
+    code, out = lancer(['hostname', '-I'], 10)
+    return set(out.split()) if code == 0 else set()
 
 
 def identifier(conf, nom=None, role=None):
     if nom and role:
         return nom, role
     court = socket.gethostname().split('.')[0].lower()
+    ips = None
     for s in serveurs_conf(conf):
-        if s['hote'].split('.')[0].lower() == court or (nom and s['nom'] == nom):
+        if nom and s['nom'] == nom:
             return s['nom'], role or s['role']
+        if not nom and s['hote'].split('.')[0].lower() == court:
+            return s['nom'], role or s['role']
+    for s in serveurs_conf(conf):
+        if not nom and s['ip']:
+            ips = adresses_locales() if ips is None else ips
+            if s['ip'] in ips:
+                return s['nom'], role or s['role']
     return nom or court.upper(), role or 'app'
 
 
@@ -597,7 +610,18 @@ def collecter_api(conf):
 # --------------------------------------------------------------------------------------------
 # Instantané
 # --------------------------------------------------------------------------------------------
+def conf_serveur(conf, nom):
+    """Valeurs propres à un serveur : CLE_<NOM> l'emporte sur CLE (ex. INFORMIXSERVER_REPL=ol_tractafric_rss)."""
+    res = dict(conf)
+    suffixe = '_' + nom.upper()
+    for k, v in conf.items():
+        if k.endswith(suffixe) and len(k) > len(suffixe):
+            res[k[:-len(suffixe)]] = v
+    return res
+
+
 def instantane(conf, nom, role, travail):
+    conf = conf_serveur(conf, nom)
     maint = dt.datetime.now()
     snap = {'collecteur': VERSION, 'nom': nom, 'role': role, 'horodatage': maint.strftime('%Y-%m-%d %H:%M:%S'),
             'epoch': int(time.time()), 'erreurs': []}
@@ -666,10 +690,18 @@ def main(argv):
     ap.add_argument('--nom', help='nom du serveur dans le portail (BDD, REPL, APP1...) ; défaut : déduit de SERVEURS')
     ap.add_argument('--role', choices=['bdd', 'repl', 'app', 'api'])
     ap.add_argument('--partage', help='dossier de stockage (défaut : PARTAGE du fichier de configuration)')
-    ap.add_argument('--stdout', action='store_true', help="afficher l'instantané au lieu de l'écrire")
+    ap.add_argument('--stdout', action='store_true',
+                    help="écrire l'instantané sur la sortie standard (collecte centralisée par SSH) au lieu du partage")
     a = ap.parse_args(argv)
     conf = lire_conf(a.conf)
     nom, role = identifier(conf, a.nom, a.role)
+    if a.stdout:  # appel distant : seul un dossier de travail à côté du script (fichiers unload de dbaccess)
+        travail = os.path.join(ICI, 'travail')
+        if not os.path.isdir(travail):
+            os.makedirs(travail)
+        snap = instantane(conf, nom, role, travail)
+        sys.stdout.write(json.dumps(snap, ensure_ascii=True, sort_keys=True) + '\n')  # ASCII : sûr même sous LANG=C
+        return 0
     partage = a.partage or conf.get('PARTAGE') or os.path.join(os.path.dirname(ICI), 'donnees-portail')
     dossier = os.path.join(partage, 'donnees', nom)
     travail = os.path.join(partage, 'travail')
@@ -677,9 +709,6 @@ def main(argv):
         if not os.path.isdir(d):
             os.makedirs(d)
     snap = instantane(conf, nom, role, travail)
-    if a.stdout:
-        print(json.dumps(snap, ensure_ascii=False, indent=1, sort_keys=True))
-        return 0
     ecrire_json(os.path.join(dossier, 'dernier.json'), snap)
     ajouter_historique(os.path.join(dossier, 'historique.jsonl'), resume(snap), int(conf.get('CONSERVATION_JOURS', '7')))
     print('%s %s (%s) : instantané écrit dans %s%s' % (snap['horodatage'], nom, role, dossier,

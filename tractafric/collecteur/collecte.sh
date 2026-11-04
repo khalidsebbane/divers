@@ -38,6 +38,12 @@ exec 9> "$PARTAGE/journal/.verrou_$(hostname -s)"
 command -v flock >/dev/null 2>&1 && ! flock -n 9 && { echo "$(date '+%F %T') collecte précédente encore en cours" >> "$JOURNAL"; exit 0; }
 [ -f "$JOURNAL" ] && [ "$(stat -c %s "$JOURNAL" 2>/dev/null || echo 0)" -gt 5242880 ] && mv -f "$JOURNAL" "$JOURNAL.1"
 
+# Mode central : ce serveur collecte tous les autres par SSH puis génère le portail
+if [ "${MODE:-partage}" = "central" ]; then
+  nice -n 10 "$PY" "$ICI/collecte_centrale.py" --conf "$CONF" --partage "$PARTAGE" >> "$JOURNAL" 2>&1
+  exit $?
+fi
+
 nice -n 10 "$PY" "$ICI/collecte_infra.py" --conf "$CONF" --partage "$PARTAGE" "${ARGS[@]}" >> "$JOURNAL" 2>&1
 
 # Le serveur GENERATEUR construit le portail à partir des instantanés de tous les serveurs

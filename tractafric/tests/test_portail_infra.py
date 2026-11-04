@@ -186,3 +186,68 @@ def test_scripts_shell_et_python27():
             return
     import pytest
     pytest.skip('Python 2.7 absent : compilation 2.7 non vérifiée')
+
+
+# ------------------------------------------------------------------ mode central (SSH)
+import collecte_centrale as cc  # noqa: E402
+
+CONF_CENTRAL = {'MODE': 'central', 'CENTRAL': 'REPL', 'SERVEURS': 'BDD:srv-bdd01:bdd:10.0.1.11 REPL:srv-bdd02:repl:10.0.1.12 '
+                'APP1:srv-app01:app:10.0.1.21', 'CLE_SSH': '/root/.ssh/portail_infra', 'SERVICES': '', 'INFORMIXSERVER': 'ol_prim',
+                'INFORMIXSERVER_REPL': 'ol_rss'}
+
+
+def test_serveurs_ip_et_surcharges():
+    s = c.serveurs_conf(CONF_CENTRAL)
+    assert s[0] == {'nom': 'BDD', 'hote': 'srv-bdd01', 'role': 'bdd', 'ip': '10.0.1.11'}
+    assert c.serveurs_conf({'SERVEURS': 'X:h:app'})[0]['ip'] == ''
+    assert c.conf_serveur(CONF_CENTRAL, 'REPL')['INFORMIXSERVER'] == 'ol_rss'
+    assert c.conf_serveur(CONF_CENTRAL, 'BDD')['INFORMIXSERVER'] == 'ol_prim'
+
+
+def test_commande_ssh_et_reponse():
+    srv = c.serveurs_conf(CONF_CENTRAL)[2]
+    cmd = cc.commande_ssh(srv, CONF_CENTRAL)
+    assert cmd[0] == 'ssh' and 'BatchMode=yes' in cmd and 'StrictHostKeyChecking=yes' in cmd and cmd[-2:] == ['root@10.0.1.21', 'collecte']
+    assert cc.lire_instantane('Bienvenue\n{"nom": "APP1", "erreurs": []}\n', srv)['nom'] == 'APP1'
+    for mauvais in ('{"nom": "APP2"}', 'Permission denied (publickey).'):
+        try:
+            cc.lire_instantane(mauvais, srv)
+            assert False
+        except ValueError:
+            pass
+
+
+def test_collecte_centrale_avec_ssh_simule():
+    d = tempfile.mkdtemp()
+    appels = []
+
+    def faux_ssh(cmd, delai, entree=None):
+        appels.append(cmd[-2])
+        if cmd[-2] == 'root@10.0.1.11':
+            return 255, 'ssh: connect to host 10.0.1.11 port 22: Connection timed out'
+        return 0, json.dumps({'nom': 'APP1', 'role': 'app', 'horodatage': '2026-11-04 10:00:00', 'erreurs': [],
+                              'systeme': {'cpu_pct': 12, 'memoire': {'pct': 40}, 'disques': []}})
+    try:
+        res = dict(cc.collecter_tout(CONF_CENTRAL, d, faux_ssh, ips={'10.0.1.12'}))
+        assert sorted(appels) == ['root@10.0.1.11', 'root@10.0.1.21']          # REPL collecté localement, pas en SSH
+        assert res['REPL'].startswith('ok') and res['APP1'] == 'ok' and res['BDD'].startswith('ÉCHEC')
+        assert os.path.exists(os.path.join(d, 'donnees', 'APP1', 'dernier.json'))
+        assert not os.path.exists(os.path.join(d, 'donnees', 'BDD'))
+        donnees = g.assembler(CONF_CENTRAL, d, maintenant=dt.datetime(2026, 11, 4, 10, 5))
+        etats = dict((s['nom'], s['statut']) for s in donnees['serveurs'])
+        assert etats['BDD'] == 'injoignable' and etats['APP1'] == 'ok'
+    finally:
+        shutil.rmtree(d)
+
+
+def test_sortie_standard_ascii():
+    d = tempfile.mkdtemp()
+    try:
+        conf = os.path.join(d, 't.conf')
+        io.open(conf, 'w', encoding='utf-8').write('SERVICES=\n')
+        out = subprocess.check_output([sys.executable, os.path.join(RACINE, 'collecteur', 'collecte_infra.py'), '--conf', conf,
+                                       '--nom', 'APP1', '--role', 'app', '--stdout'], env=dict(os.environ, LANG='C', LC_ALL='C'))
+        assert max(out) < 128 and json.loads(out.decode('ascii'))['nom'] == 'APP1'
+    finally:
+        shutil.rmtree(d)
+        shutil.rmtree(os.path.join(RACINE, 'collecteur', 'travail'), ignore_errors=True)

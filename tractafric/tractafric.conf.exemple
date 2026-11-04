@@ -4,14 +4,28 @@
 # Format shell : CLE=valeur (lu par collecte.sh et par les scripts Python).
 # =============================================================================================
 
-# --- Stockage : dossier commun (NFS) visible de tous les serveurs. Jamais /var ni /tmp.
+# --- Mode de collecte
+#   central : le serveur CENTRAL interroge tous les autres par SSH (clé à commande forcée) ; rien à partager.
+#             Installation : collecteur/deployer-ssh.sh puis collecteur/installer-cron.sh, sur le CENTRAL seulement.
+#   partage : chaque serveur lance sa propre collecte par cron et écrit dans un dossier commun (NFS) ;
+#             le serveur GENERATEUR construit le portail.
+MODE=central
+CENTRAL=REPL
+
+# --- Stockage sur le serveur central (ou dossier NFS commun en mode partage). Jamais /var ni /tmp.
 PARTAGE=/msdos/ks/tractafric
 
-# --- Serveurs de l'infrastructure : NOM:nom_d_hote:role   (rôles : bdd, repl, app, api)
-SERVEURS="BDD:srv-bdd01:bdd REPL:srv-bdd02:repl APP1:srv-app01:app APP2:srv-app02:app APP3:srv-app03:app API:srv-api01:api"
+# --- Serveurs de l'infrastructure : NOM:nom_d_hote:role:adresse_IP   (rôles : bdd, repl, app, api)
+SERVEURS="BDD:srv-bdd01:bdd:10.0.1.11 REPL:srv-bdd02:repl:10.0.1.12 APP1:srv-app01:app:10.0.1.21 APP2:srv-app02:app:10.0.1.22 APP3:srv-app03:app:10.0.1.23 API:srv-api01:api:10.0.1.30"
 
-# Serveur qui génère le portail après sa propre collecte (et l'héberge sous httpd)
-GENERATEUR=API
+# --- SSH (mode central) : compte utilisé sur les serveurs interrogés, clé du portail, port
+COMPTE_SSH=root
+CLE_SSH=/root/.ssh/portail_infra
+PORT_SSH=22
+DELAI_SSH=300
+
+# Serveur qui génère le portail en mode partage
+GENERATEUR=REPL
 
 # --- Fréquence (minutes, utilisée par installer-cron.sh) et conservation de l'historique
 FREQUENCE_MIN=15
@@ -22,7 +36,9 @@ INFORMIXDIR=/opt/IBM/informix
 INFORMIXSERVER=ol_tractafric
 ONCONFIG=onconfig.ol_tractafric
 INFORMIXSQLHOSTS=/opt/IBM/informix/etc/sqlhosts
-# Profil à charger à la place (facultatif) : PROFIL_INFORMIX=/home/informix/.bash_profile
+# Valeur propre à un serveur : suffixe _<NOM>, par exemple pour l'instance du secondaire :
+# INFORMIXSERVER_REPL=ol_tractafric_rss
+# Profil à charger (mode partage, ou serveur central seulement) : PROFIL_INFORMIX=/home/informix/.bash_profile
 PROFIL_INFORMIX=
 DELAI_SQL=120
 ENCODAGE_BASE=latin-1

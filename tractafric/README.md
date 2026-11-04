@@ -64,31 +64,80 @@ Toutes les requêtes SQL sont en `DIRTY READ`, avec un délai d'attente. Un verr
 
 ## Installation
 
+Deux modes, au choix (`MODE` dans `tractafric.conf`) :
+
+| Mode | Principe | Quand l'utiliser |
+|---|---|---|
+| **central** (recommandé) | Un seul serveur, par exemple **REPL**, porte le portail et le cron. Il interroge les autres en SSH avec une clé **à commande forcée** : sur chaque serveur, elle ne peut lancer que le collecteur | Les serveurs se joignent en SSH ; aucun partage commun |
+| **partage** | Chaque serveur a son cron et écrit dans un dossier NFS commun | Un partage NFS existe déjà sur tous les serveurs |
+
+### Mode central (depuis REPL)
+
+```
+            REPL (central) : cron */15 → collecte_centrale.py → portail/index.html
+              │ SSH, clé ed25519 portail-infra, en parallèle
+   ┌──────────┼──────────┬──────────┬──────────┐
+   ▼          ▼          ▼          ▼          ▼
+  BDD        APP1       APP2       APP3       API
+  authorized_keys : from="IP de REPL",command="python …/collecte_infra.py --stdout --nom APP1 --role app",no-pty…
+  → la clé ne donne aucun shell : quelle que soit la commande envoyée, seul le collecteur s'exécute
+```
+
 Prérequis :
-- un dossier partagé (NFS) monté sur les 6 serveurs, **ni sous /var ni sous /tmp** ;
-- Python 2.7 ou 3.6 et plus (RHEL 7, 8 ou 9 : `platform-python` ou `python3`, rien à installer) ;
-- Apache httpd sur le serveur qui publie le portail.
+- REPL joint chaque serveur en SSH (port 22) ;
+- un compte d'administration permet de déployer une seule fois sur chaque serveur : root, ou un compte avec sudo ;
+- les serveurs interrogés ont Python (`platform-python` ou `python3` sur RHEL 8 et 9, `python` 2.7 sur RHEL 7).
 
 ```bash
-# 1. Une seule fois : déposer le dossier sur le partage et adapter la configuration
-cp -r tractafric /msdos/ks/tractafric && cd /msdos/ks/tractafric
-cp tractafric.conf.exemple tractafric.conf && vi tractafric.conf      # SERVEURS, GENERATEUR, BASE, Informix, URLS_API
+# Sur REPL, en root
+mkdir -p /msdos/ks && cd /msdos/ks
+git clone -b claude/blissful-fermi-qhv29b https://github.com/khalidsebbane/divers.git && cp -r divers/tractafric . && rm -rf divers
+cd /msdos/ks/tractafric
+cp tractafric.conf.exemple tractafric.conf && vi tractafric.conf
+#   MODE=central  CENTRAL=REPL  SERVEURS="BDD:hote:bdd:IP REPL:hote:repl:IP APP1:hote:app:IP ..."
+#   INFORMIXDIR / INFORMIXSERVER (INFORMIXSERVER_REPL=... si l'instance du secondaire a un autre nom), BASE=..., URLS_API=...
 
-# 2. Sur chaque serveur (BDD, REPL, APP1, APP2, APP3, API), en root
-/msdos/ks/tractafric/collecteur/installer-cron.sh --tester     # collecte immédiate et contrôle
-/msdos/ks/tractafric/collecteur/installer-cron.sh              # ajoute la ligne cron (toutes les 15 min)
+./collecteur/deployer-ssh.sh            # clé du portail, collecteur dans /opt/portail-infra sur chaque serveur, test
+                                        # (ADMIN=compte ./collecteur/deployer-ssh.sh si root n'a pas d'accès SSH direct)
+./collecteur/installer-cron.sh --tester # collecte de tous les serveurs + génération du portail
+./collecteur/installer-cron.sh          # cron toutes les 15 minutes, sur REPL uniquement
+```
 
-# 3. Sur le serveur GENERATEUR : publication HTTPS réservée au groupe AD de la DSI
+Le déploiement affiche l'empreinte SSH de chaque serveur, à comparer, puis termine par un bilan `OK` ou `ÉCHEC` par serveur.
+
+Points à vérifier :
+- **Root sans connexion SSH** (`PermitRootLogin no`) : mettre `PermitRootLogin forced-commands-only`. Root n'est alors accepté que par une clé à commande forcée. Autre solution : `COMPTE_SSH=un_compte`, auquel cas le déploiement crée la règle sudo limitée au collecteur.
+- **Ajouter un serveur ou mettre à jour le collecteur** : `./collecteur/deployer-ssh.sh APP3`.
+- **Tout retirer** : `./collecteur/deployer-ssh.sh --desinstaller`, puis `./collecteur/installer-cron.sh --retirer`.
+
+### Ouvrir le portail
+
+Le fichier `<PARTAGE>/portail/index.html` (par exemple `/msdos/ks/tractafric/portail/index.html` sur REPL) est autonome. Il s'ouvre **directement dans un navigateur**, sans serveur web :
+- **sur REPL, s'il a une interface graphique** : `firefox /msdos/ks/tractafric/portail/index.html` ;
+- **depuis un poste Windows** :
+  - si `/msdos/ks` est un partage Windows monté sur REPL, ouvrir le fichier par ce partage ;
+  - sinon, le récupérer avec WinSCP : `scp root@REPL:/msdos/ks/tractafric/portail/index.html .` ;
+- **en accès permanent pour la DSI** : Apache en HTTPS avec authentification AD (voir plus bas). Le fichier contient des noms d'utilisateurs et des adresses IP : ne pas le publier sans authentification.
+
+### Mode partage (NFS)
+
+```bash
+# 1. Une seule fois : déposer le dossier sur le partage et adapter la configuration (MODE=partage, GENERATEUR=...)
+cp tractafric.conf.exemple tractafric.conf && vi tractafric.conf
+# 2. Sur chaque serveur, en root
+/msdos/ks/tractafric/collecteur/installer-cron.sh --tester && /msdos/ks/tractafric/collecteur/installer-cron.sh
+```
+
+### Publication Apache (facultatif)
+
+Sur le serveur qui porte le portail :
+
+```bash
 cp deploiement/portail-infra.conf /etc/httpd/conf.d/ && vi /etc/httpd/conf.d/portail-infra.conf
 apachectl configtest && systemctl reload httpd                 # https://portail-infra.tractafric.local:8443
 ```
 
-Pour retirer la collecte : `installer-cron.sh --retirer` sur chaque serveur.
-
-Génération à la main :
-```bash
-python3 portail/generer_portail.py --conf tractafric.conf
-```
+Génération manuelle du portail : `python3 portail/generer_portail.py --conf tractafric.conf`.
 
 ### Seuils d'alerte
 
@@ -134,6 +183,8 @@ Les tests couvrent :
 - la traduction des planifications ;
 - les règles d'alerte ;
 - la génération complète du portail ;
-- l'échappement du contenu.
+- l'échappement du contenu ;
+- la collecte centrale avec un SSH simulé : serveur local, serveur distant, serveur injoignable et nom de serveur incohérent ;
+- la sortie ASCII sous `LANG=C`.
 
 La compilation en Python 2.7 est testée quand Python 2.7 est présent.
