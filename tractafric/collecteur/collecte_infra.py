@@ -302,6 +302,14 @@ def parse_log_cron(texte, annee=None, maintenant=None):
     return res
 
 
+def compte_courant():
+    try:
+        import pwd
+        return pwd.getpwuid(os.getuid()).pw_name
+    except (ImportError, KeyError):
+        return os.environ.get('USER', '')
+
+
 def collecter_cron(conf):
     taches = []
     taches += parse_crontab(lire('/etc/crontab'), '/etc/crontab')
@@ -315,10 +323,15 @@ def collecter_cron(conf):
             if os.path.isfile(os.path.join(spool, u)):
                 taches += parse_crontab(lire(os.path.join(spool, u)), 'crontab ' + u, u)
                 vus.add(u)
-    for u in conf.get('COMPTES_CRONTAB', 'root informix').split():
+    moi = compte_courant()
+    comptes = conf.get('COMPTES_CRONTAB', 'root informix').split()
+    if moi and moi not in comptes:
+        comptes.append(moi)
+    for u in comptes:
         if u in vus:
             continue
-        code, out = lancer(['crontab', '-l', '-u', u], 15)
+        # sans root, seule la crontab du compte courant est lisible (crontab -l sans -u)
+        code, out = lancer(['crontab', '-l'] if u == moi else ['crontab', '-l', '-u', u], 15)
         if code == 0:
             taches += parse_crontab(out, 'crontab ' + u, u)
     journal = lire('/var/log/cron')

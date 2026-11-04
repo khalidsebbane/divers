@@ -274,3 +274,19 @@ def test_compte_ssh_propre_a_un_serveur():
     s = dict((x['nom'], x) for x in c.serveurs_conf(conf))
     assert cc.commande_ssh(s['APP1'], conf)[-2] == 'irium@10.0.1.21'
     assert cc.commande_ssh(s['BDD'], conf)[-2] == 'informix@10.0.1.11'
+
+
+def test_crontab_du_compte_courant_sans_root(monkeypatch):
+    appels = []
+
+    def faux(cmd, delai=60, entree=None):
+        appels.append(cmd)
+        return (0, '*/10 7-19 * * 1-5 fglrun /irium/bin/Xp_cron_relance_cde.42r\n') if cmd == ['crontab', '-l'] else (1, 'must be privileged')
+    monkeypatch.setattr(c, 'lancer', faux)
+    monkeypatch.setattr(c, 'compte_courant', lambda: 'irium')
+    monkeypatch.setattr(c, 'lire', lambda chemin, defaut='': '')
+    monkeypatch.setattr(os.path, 'isdir', lambda d: False)
+    r = c.collecter_cron({'COMPTES_CRONTAB': 'root informix'})
+    assert ['crontab', '-l'] in appels and ['crontab', '-l', '-u', 'irium'] not in appels
+    assert [(t['utilisateur'], t['commande']) for t in r['taches']] == [('irium', 'fglrun /irium/bin/Xp_cron_relance_cde.42r')]
+    assert r['journal_lisible'] is False

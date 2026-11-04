@@ -27,8 +27,8 @@ from collecte_infra import (adresses_locales, ajouter_historique, conf_serveur, 
 def commande_ssh(srv, conf):
     """Commande SSH vers un serveur distant. La commande réellement exécutée est imposée par authorized_keys."""
     conf = conf_serveur(conf, srv['nom'])  # COMPTE_SSH_APP1=... l'emporte sur COMPTE_SSH
-    cle = conf.get('CLE_SSH', '/root/.ssh/portail_infra')
-    compte = conf.get('COMPTE_SSH', 'root')
+    cle = conf.get('CLE_SSH') or os.path.expanduser('~/.ssh/portail_infra')
+    compte = conf.get('COMPTE_SSH') or 'root'
     return ['ssh', '-i', cle, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=%s' % conf.get('DELAI_CONNEXION_SSH', '10'),
             '-o', 'StrictHostKeyChecking=yes', '-o', 'ServerAliveInterval=15', '-o', 'LogLevel=ERROR',
             '-p', conf.get('PORT_SSH', '22'), '%s@%s' % (compte, srv['ip'] or srv['hote']), 'collecte']

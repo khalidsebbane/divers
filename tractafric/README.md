@@ -89,7 +89,7 @@ Prérequis :
 - les serveurs interrogés ont Python (`platform-python` ou `python3` sur RHEL 8 et 9, `python` 2.7 sur RHEL 7).
 
 ```bash
-# Sur REPL, en root
+# Sur REPL, sous le compte qui portera la collecte (informix sans root, ou root)
 mkdir -p /msdos/ks && cd /msdos/ks
 git clone -b claude/blissful-fermi-qhv29b https://github.com/khalidsebbane/divers.git && cp -r divers/tractafric . && rm -rf divers
 cd /msdos/ks/tractafric
@@ -100,18 +100,21 @@ cp tractafric.conf.exemple tractafric.conf && vi tractafric.conf
 ./collecteur/deployer-ssh.sh            # clé du portail, collecteur dans /opt/portail-infra sur chaque serveur, test
                                         # (root sans accès SSH direct : ADMIN=irium et ELEVATION=su ou sudo dans tractafric.conf)
 ./collecteur/installer-cron.sh --tester # collecte de tous les serveurs + génération du portail
-./collecteur/installer-cron.sh          # cron toutes les 15 minutes, sur REPL uniquement
+./collecteur/installer-cron.sh          # cron toutes les 15 minutes, dans la crontab du compte, sur REPL uniquement
 ```
 
 Le déploiement affiche l'empreinte SSH de chaque serveur, à comparer, puis termine par un bilan `OK` ou `ÉCHEC` par serveur.
 
 Points à vérifier :
-- **Comptes** :
-  - `ADMIN=informix` et `ELEVATION=su` : le déploiement se connecte en `informix`, puis passe root par `su -`. Un seul mot de passe par serveur grâce à la connexion SSH partagée ;
-  - `COMPTE_SSH=informix` : la collecte se connecte en `informix`. Le déploiement crée `/etc/sudoers.d/portail-infra`, qui n'autorise ce compte qu'à lancer le collecteur, pour lire les crontabs et `/var/log/cron` ;
-  - toutes les commandes Informix (`onstat`, `dbaccess`) sont exécutées sous `COMPTE_INFORMIX=informix`, avec les droits DBSA : aucun GRANT n'est nécessaire ;
-  - sans sudo : `SUDO_COLLECTE=non`. Seule la crontab du compte est alors lue ;
-  - compte propre à un serveur : `COMPTE_SSH_APP1=irium`, `ADMIN_APP1=irium`.
+- **Comptes, sans root** (`ELEVATION=aucune`, cas de Tractafric) :
+  - le cron et le portail tournent sous `informix` sur REPL. Le déploiement se lance aussi sous `informix` ;
+  - chaque serveur est interrogé sous son compte de collecte : `COMPTE_SSH=irium` par défaut, `COMPTE_SSH_BDD=informix` pour la base. Le mot de passe de ce compte est demandé une fois par serveur ;
+  - le collecteur est installé dans `~/portail-infra` et la clé dans `~/.ssh/authorized_keys` du compte : aucun privilège, aucun fichier système modifié ;
+  - limite : seules la crontab du compte et les tâches système (`/etc/crontab`, `/etc/cron.d`) sont lues, et `/var/log/cron` (exécutions sur 24 h) ne l'est pas.
+- **Comptes, avec root** (`ELEVATION=su` ou `sudo`) :
+  - installation dans `/opt/portail-infra` ;
+  - `SUDO_COLLECTE=oui` crée une règle sudo limitée au collecteur, qui lit alors toutes les crontabs ;
+  - `onstat` et `dbaccess` sont relancés sous `COMPTE_INFORMIX`.
 - **Ajouter un serveur ou mettre à jour le collecteur** : `./collecteur/deployer-ssh.sh APP3`.
 - **Tout retirer** : `./collecteur/deployer-ssh.sh --desinstaller`, puis `./collecteur/installer-cron.sh --retirer`.
 

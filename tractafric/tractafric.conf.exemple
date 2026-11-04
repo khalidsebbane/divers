@@ -19,18 +19,23 @@ PARTAGE=/msdos/ks/tractafric
 SERVEURS="BDD:srv-bdd01:bdd:10.0.1.11 REPL:srv-bdd02:repl:10.0.1.12 APP1:srv-app01:app:10.0.1.21 APP2:srv-app02:app:10.0.1.22 APP3:srv-app03:app:10.0.1.23 API:srv-api01:api:10.0.1.30"
 
 # --- SSH (mode central)
-# ADMIN       : compte de connexion pour le déploiement (une seule fois) ; ELEVATION : su (mot de passe root) ou sudo
-# COMPTE_SSH  : compte utilisé ensuite par la collecte automatique, avec la clé du portail
-# SUDO_COLLECTE=oui : règle sudo limitée au collecteur (lecture des crontabs et de /var/log/cron) ;
-#               non : le collecteur tourne sous COMPTE_SSH sans sudo (seule sa propre crontab est lue)
-# Compte propre à un serveur (ex. si informix n'existe pas sur un serveur d'applications) : COMPTE_SSH_APP1=irium, ADMIN_APP1=irium
-ADMIN=root
-ELEVATION=su
-COMPTE_SSH=root
+# ELEVATION=aucune (sans root) : le cron du serveur central tourne sous le compte qui lance le déploiement
+#   (ex. informix sur REPL) ; chaque serveur est interrogé sous son compte de collecte, sans privilège, et le
+#   collecteur est installé dans le dossier personnel de ce compte (~/portail-infra).
+#   Limite sans root : seules la crontab du compte de collecte et les tâches système (/etc/crontab, /etc/cron.d)
+#   sont lues ; /var/log/cron n'est pas lisible (exécutions sur 24 h non affichées).
+# ELEVATION=su ou sudo (si root est disponible) : ADMIN se connecte puis passe root ; SUDO_COLLECTE=oui crée une
+#   règle sudo limitée au collecteur pour tout lire.
+ELEVATION=aucune
+# Compte de collecte par défaut, et compte propre à un serveur : COMPTE_SSH_<NOM>
+COMPTE_SSH=irium
+# COMPTE_SSH_BDD=informix
+ADMIN=
 SUDO_COLLECTE=oui
-# Compte sous lequel le collecteur lance onstat et dbaccess (droits DBSA, aucun GRANT nécessaire)
+# Compte sous lequel lancer onstat et dbaccess quand le collecteur tourne en root (sans effet sinon)
 COMPTE_INFORMIX=informix
-CLE_SSH=/root/.ssh/portail_infra
+# Clé du portail (défaut : ~/.ssh/portail_infra du compte qui lance la collecte centrale)
+CLE_SSH=
 PORT_SSH=22
 DELAI_SSH=300
 
