@@ -1,0 +1,1104 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>__TITRE__ · __CLIENT__</title>
+<link rel="icon" href="__LOGO_CLIENT__">
+<style>
+:root{
+  color-scheme:light;
+  --bg:#f3f3ef;--surface:#ffffff;--surface-2:#f8f8f5;--line:#e5e4de;--line-2:#d6d5cd;
+  --ink:#0b0b0b;--ink-2:#52514e;--ink-3:#7a7973;
+  --brand:#ffc50c;--brand-ink:#141414;--brand-soft:#fff4cc;
+  --side:#141414;--side-2:#1f1f1d;--side-ink:#f0efec;--side-ink-2:#a9a89f;
+  --s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;
+  --good:#0ca30c;--warn:#fab219;--serious:#ec835a;--crit:#d03b3b;
+  --good-soft:#e3f4e3;--warn-soft:#fff2d4;--serious-soft:#fde8df;--crit-soft:#fae1e1;
+  --shadow:0 1px 2px rgba(20,20,20,.05),0 8px 24px rgba(20,20,20,.06);
+  --r:14px;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --bg:#0d0d0d;--surface:#1a1a19;--surface-2:#222220;--line:#2d2d2a;--line-2:#3a3a36;
+    --ink:#f0efec;--ink-2:#c3c2b7;--ink-3:#8f8e86;--brand-soft:#3a300a;
+    --side:#111110;--side-2:#1d1d1b;
+    --s1:#3987e5;--s2:#d95926;--s3:#199e70;
+    --good-soft:#12301a;--warn-soft:#3a2e0d;--serious-soft:#3b2218;--crit-soft:#3d1717;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0d0d0d;--surface:#1a1a19;--surface-2:#222220;--line:#2d2d2a;--line-2:#3a3a36;
+  --ink:#f0efec;--ink-2:#c3c2b7;--ink-3:#8f8e86;--brand-soft:#3a300a;
+  --side:#111110;--side-2:#1d1d1b;
+  --s1:#3987e5;--s2:#d95926;--s3:#199e70;
+  --good-soft:#12301a;--warn-soft:#3a2e0d;--serious-soft:#3b2218;--crit-soft:#3d1717;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.35);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased}
+button,input,select{font:inherit;color:inherit}
+.num{font-variant-numeric:tabular-nums}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+
+/* ---------- structure ---------- */
+.app{display:grid;grid-template-columns:248px 1fr;min-height:100vh}
+.side{background:var(--side);color:var(--side-ink);position:sticky;top:0;height:100vh;display:flex;flex-direction:column;padding:18px 14px;gap:14px;overflow:auto}
+.marque{display:flex;align-items:center;gap:12px;padding:4px 6px 14px;border-bottom:1px solid #2a2a27}
+.marque .plaque{width:46px;height:46px;border-radius:12px;background:#fff;display:grid;place-items:center;flex:none;overflow:hidden}
+.marque .plaque img{width:42px;height:42px;object-fit:contain}
+.marque b{display:block;font-size:15px;letter-spacing:.01em}
+.marque span{display:block;font-size:12px;color:var(--side-ink-2)}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav button{all:unset;cursor:pointer;display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px;color:var(--side-ink-2);font-weight:500;position:relative}
+.nav button svg{width:18px;height:18px;flex:none;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.nav button:hover{background:var(--side-2);color:var(--side-ink)}
+.nav button[aria-current="page"]{background:var(--side-2);color:var(--side-ink)}
+.nav button[aria-current="page"]::before{content:"";position:absolute;left:-14px;top:8px;bottom:8px;width:4px;border-radius:0 4px 4px 0;background:var(--brand)}
+.nav .compte{margin-left:auto;font-size:11.5px;font-weight:700;padding:1px 7px;border-radius:999px;background:#2b2b28;color:var(--side-ink)}
+.nav .compte.c{background:var(--crit);color:#fff}
+.nav .sep{height:1px;background:#2a2a27;margin:8px 4px}
+.side .pied{margin-top:auto;display:flex;flex-direction:column;gap:10px;padding:12px 8px 2px;border-top:1px solid #2a2a27;font-size:12px;color:var(--side-ink-2)}
+.side .pied .irium{display:flex;align-items:center;gap:10px}
+.side .pied .irium span:first-child{background:#fff;border-radius:8px;padding:4px 8px;display:flex}
+.side .pied img{height:22px}
+main{min-width:0;display:flex;flex-direction:column}
+.top{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:14px;padding:14px 28px;background:color-mix(in srgb,var(--bg) 86%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.top h1{margin:0;font-size:19px;letter-spacing:-.01em;white-space:nowrap}
+.top .sous{color:var(--ink-3);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.top .esp{flex:1}
+.recherche{position:relative;width:min(380px,36vw)}
+.recherche input{width:100%;height:38px;border:1px solid var(--line-2);background:var(--surface);border-radius:10px;padding:0 64px 0 36px;outline:none}
+.recherche input:focus{border-color:var(--ink-3);box-shadow:0 0 0 3px color-mix(in srgb,var(--brand) 35%,transparent)}
+.recherche svg{position:absolute;left:11px;top:11px;width:16px;height:16px;stroke:var(--ink-3);fill:none;stroke-width:2}
+.recherche kbd{position:absolute;right:9px;top:8px;font:600 11px/20px system-ui;color:var(--ink-3);border:1px solid var(--line-2);border-radius:6px;padding:0 6px;background:var(--surface-2)}
+.resultats{position:absolute;top:44px;left:0;right:0;background:var(--surface);border:1px solid var(--line-2);border-radius:12px;box-shadow:var(--shadow);max-height:420px;overflow:auto;display:none;padding:6px}
+.resultats.ouvert{display:block}
+.resultats .grp{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);padding:8px 10px 4px}
+.resultats button{all:unset;display:flex;gap:10px;align-items:center;width:100%;box-sizing:border-box;padding:7px 10px;border-radius:8px;cursor:pointer}
+.resultats button:hover,.resultats button.actif{background:var(--surface-2)}
+.resultats small{color:var(--ink-3);margin-left:auto}
+.icone-btn{all:unset;cursor:pointer;width:38px;height:38px;border-radius:10px;display:grid;place-items:center;border:1px solid var(--line-2);background:var(--surface)}
+.icone-btn svg{width:18px;height:18px;stroke:var(--ink-2);fill:none;stroke-width:1.8}
+.icone-btn:focus-visible,.nav button:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.contenu{padding:24px 28px 40px;display:flex;flex-direction:column;gap:20px;max-width:1600px;width:100%}
+.vue{display:none;flex-direction:column;gap:20px}
+.vue.active{display:flex}
+.bandeau{display:flex;gap:10px;align-items:center;padding:10px 14px;border-radius:12px;background:var(--brand-soft);border:1px solid color-mix(in srgb,var(--brand) 55%,transparent);font-size:13px}
+
+/* ---------- cartes ---------- */
+.grille{display:grid;gap:16px}
+.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.g-hero{grid-template-columns:minmax(400px,1.15fr) 3fr}
+.g-main{grid-template-columns:minmax(0,1.9fr) minmax(320px,1fr)}
+.carte{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);padding:18px;min-width:0}
+.carte h2{margin:0 0 2px;font-size:15px;letter-spacing:-.005em}
+.carte .aide{margin:0 0 14px;color:var(--ink-3);font-size:12.5px}
+.carte-tete{display:flex;align-items:flex-start;gap:12px;margin-bottom:12px}
+.carte-tete>div:first-child{flex:1;min-width:0}
+.carte-tete .aide{margin:0}
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);padding:14px 16px;display:flex;flex-direction:column;gap:4px;min-width:0;position:relative;overflow:hidden}
+.kpi .lib{font-size:12.5px;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .et{margin:2px 0}
+.kpi .val{font-size:28px;font-weight:700;letter-spacing:-.02em;line-height:1.1}
+.kpi .val small{font-size:14px;font-weight:600;color:var(--ink-3);margin-left:3px}
+.kpi .sub{font-size:12px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .spark{position:absolute;right:12px;top:12px;width:80px;height:28px;opacity:.9}
+.sante{display:flex;gap:20px;align-items:center}
+.anneau{position:relative;width:150px;height:150px;flex:none}
+.anneau svg{width:150px;height:150px;transform:rotate(-90deg)}
+.anneau .centre{position:absolute;inset:0;display:grid;place-items:center;text-align:center}
+.anneau .centre b{font-size:40px;letter-spacing:-.03em;line-height:1}
+.anneau .centre span{font-size:12px;color:var(--ink-3)}
+.sante h2{font-size:17px;white-space:nowrap}
+.puces{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+
+/* ---------- état ---------- */
+.etat{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:3px 9px 3px 7px;border-radius:999px;white-space:nowrap;border:1px solid transparent}
+.etat svg{width:13px;height:13px;flex:none}
+.etat.ok{background:var(--good-soft);color:var(--ink)}
+.etat.ok svg{fill:var(--good)}
+.etat.attention,.etat.haute{background:var(--serious-soft);color:var(--ink)}
+.etat.attention svg,.etat.haute svg{fill:var(--serious)}
+.etat.moyenne{background:var(--warn-soft);color:var(--ink)}
+.etat.moyenne svg{fill:var(--warn)}
+.etat.critique,.etat.injoignable{background:var(--crit-soft);color:var(--ink)}
+.etat.critique svg,.etat.injoignable svg{fill:var(--crit)}
+.etat.faible{background:var(--surface-2);color:var(--ink-2);border-color:var(--line)}
+.etat.faible svg{fill:var(--ink-3)}
+.badge{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:2px 7px;border-radius:6px;background:var(--surface-2);border:1px solid var(--line);color:var(--ink-2)}
+.badge.marque{background:var(--brand);border-color:var(--brand);color:var(--brand-ink)}
+
+/* ---------- serveurs ---------- */
+.bande-srv{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px}
+.srv-mini{all:unset;cursor:pointer;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);padding:14px;display:flex;flex-direction:column;gap:10px;min-width:0;transition:transform .15s,border-color .15s}
+.srv-mini:hover{transform:translateY(-2px);border-color:var(--line-2)}
+.srv-mini:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.srv-mini .t{display:flex;align-items:center;gap:8px}
+.srv-mini .t b{font-size:16px}
+.srv-mini .t .etat{margin-left:auto}
+.srv-mini .h{font-size:12px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.jauge{display:grid;grid-template-columns:44px 1fr 46px;gap:8px;align-items:center;font-size:12px;color:var(--ink-2)}
+.jauge .piste{height:8px;border-radius:999px;background:var(--surface-2);border:1px solid var(--line);overflow:hidden}
+.jauge .rempli{height:100%;border-radius:999px;background:var(--ink-3)}
+.jauge .rempli.ok{background:var(--good)}.jauge .rempli.moyenne{background:var(--warn)}.jauge .rempli.haute{background:var(--serious)}.jauge .rempli.critique{background:var(--crit)}
+.jauge .v{text-align:right;font-weight:600;color:var(--ink);white-space:nowrap}
+.srv-carte .ident{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.srv-carte .ident b{font-size:18px}
+.srv-carte dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:12px 0;font-size:12.5px}
+.srv-carte dt{color:var(--ink-3)}
+.srv-carte dd{margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font-size:12px;padding:3px 9px;border-radius:999px;background:var(--surface-2);border:1px solid var(--line);color:var(--ink-2);white-space:nowrap}
+.chip b{color:var(--ink)}
+.sec{font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);margin:14px 0 8px;font-weight:600}
+details summary{cursor:pointer;color:var(--ink-2);font-size:12.5px;margin-top:10px}
+
+/* ---------- tableaux ---------- */
+.tab-wrap{overflow:auto;border:1px solid var(--line);border-radius:12px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{position:sticky;top:0;background:var(--surface-2);text-align:left;font-weight:600;color:var(--ink-2);font-size:12px;padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap;user-select:none}
+th.tri{cursor:pointer}
+th.tri:hover{color:var(--ink)}
+th .fl{opacity:.5;margin-left:4px}
+td{padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+tbody tr:hover td{background:var(--surface-2)}
+tr:last-child td{border-bottom:0}
+td.r,th.r{text-align:right}
+.lien{all:unset;cursor:pointer;color:var(--ink);font-weight:600;border-bottom:1px dashed var(--ink-3)}
+.lien:hover{border-bottom-style:solid}
+.cmd{max-width:520px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.filtres{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px}
+.filtres input[type=search],.filtres select{height:36px;border:1px solid var(--line-2);border-radius:9px;background:var(--surface);padding:0 10px;min-width:0}
+.filtres input[type=search]{width:260px}
+.filtres label{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--ink-2)}
+.filtres .compteur{margin-left:auto;font-size:12.5px;color:var(--ink-3)}
+.btn{all:unset;cursor:pointer;height:36px;padding:0 14px;border-radius:9px;border:1px solid var(--line-2);background:var(--surface);display:inline-flex;align-items:center;gap:8px;font-weight:600;font-size:13px}
+.btn:hover{background:var(--surface-2)}
+.btn.prim{background:var(--brand);border-color:var(--brand);color:var(--brand-ink)}
+.btn:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.onglets{display:inline-flex;gap:4px;padding:4px;border-radius:11px;background:var(--surface-2);border:1px solid var(--line)}
+.onglets button{all:unset;cursor:pointer;padding:6px 14px;border-radius:8px;font-weight:600;font-size:13px;color:var(--ink-2)}
+.onglets button[aria-selected="true"]{background:var(--surface);color:var(--ink);box-shadow:var(--shadow)}
+.pages{display:flex;gap:6px;align-items:center;justify-content:flex-end;margin-top:10px;font-size:12.5px;color:var(--ink-3)}
+.pages button{all:unset;cursor:pointer;padding:4px 10px;border-radius:7px;border:1px solid var(--line-2);background:var(--surface);color:var(--ink)}
+.pages button[disabled]{opacity:.4;cursor:default}
+.vide{padding:28px;text-align:center;color:var(--ink-3)}
+
+/* ---------- graphiques ---------- */
+.graph{position:relative;width:100%}
+.graph svg{display:block;width:100%;overflow:visible}
+.axe text{fill:var(--ink-3);font-size:11px}
+.grille-l{stroke:var(--line);stroke-width:1}
+.legende{display:flex;flex-wrap:wrap;gap:14px;font-size:12.5px;color:var(--ink-2);margin-bottom:8px}
+.legende i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.barres-h{display:flex;flex-direction:column;gap:7px}
+.bh{display:grid;grid-template-columns:minmax(90px,170px) 1fr 64px;gap:10px;align-items:center;font-size:12.5px;border-radius:6px;padding:2px 4px}
+.bh:hover{background:var(--surface-2)}
+.bh .l{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+.bh .p{height:12px;border-radius:0 4px 4px 0;background:transparent;position:relative}
+.bh .p span{position:absolute;left:0;top:0;bottom:0;border-radius:0 4px 4px 0;background:var(--s1)}
+.bh .v{text-align:right;font-weight:600}
+.bh .v small{color:var(--ink-3);font-weight:500}
+.carte-chaleur{display:grid;grid-template-columns:44px repeat(24,minmax(0,1fr));gap:2px;font-size:11px;color:var(--ink-3)}
+.carte-chaleur .c{aspect-ratio:1.5;border-radius:3px;min-height:14px}
+.carte-chaleur .j{display:flex;align-items:center}
+.carte-chaleur .hh{text-align:center}
+.echelle{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--ink-3);margin-top:10px}
+.echelle .deg{height:8px;width:160px;border-radius:4px}
+#info{position:fixed;z-index:100;pointer-events:none;background:var(--surface);color:var(--ink);border:1px solid var(--line-2);border-radius:10px;box-shadow:var(--shadow);padding:8px 11px;font-size:12.5px;min-width:120px;display:none}
+#info b{display:block;margin-bottom:3px}
+#info .ligne{display:flex;gap:10px;align-items:center;justify-content:space-between}
+#info i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:6px}
+
+/* ---------- schéma ---------- */
+.schema{width:100%;overflow:auto}
+.schema svg{display:block;width:100%;min-width:760px;height:auto}
+.noeud rect.fond{fill:var(--surface);stroke:var(--line-2);stroke-width:1.5}
+.noeud.ok rect.fond{stroke:var(--good)}
+.noeud.attention rect.fond{stroke:var(--serious)}
+.noeud.critique rect.fond,.noeud.injoignable rect.fond{stroke:var(--crit)}
+.noeud{cursor:pointer}
+.noeud:hover rect.fond{filter:drop-shadow(0 6px 14px rgba(0,0,0,.18))}
+.noeud text{fill:var(--ink)}
+.noeud .t2{fill:var(--ink-3);font-size:11px}
+.noeud .t3{fill:var(--ink-2);font-size:11.5px}
+.flux{fill:none;stroke:var(--ink-3);stroke-width:2;stroke-dasharray:6 7;animation:flux 1.4s linear infinite}
+.flux.repl{stroke:var(--s1);stroke-width:2.5}
+.flux.zero{animation:none;opacity:.35}
+.etiquette rect{fill:var(--surface);stroke:var(--line-2)}
+.etiquette text{fill:var(--ink-2);font-size:11px;font-weight:600}
+.zone{fill:var(--surface-2);stroke:var(--line);stroke-dasharray:4 4}
+.zone-t{fill:var(--ink-3);font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:600}
+@keyframes flux{to{stroke-dashoffset:-26}}
+@media (prefers-reduced-motion:reduce){.flux{animation:none}.srv-mini{transition:none}}
+
+/* ---------- adaptatif ---------- */
+@media (max-width:1280px){.bande-srv{grid-template-columns:repeat(3,minmax(0,1fr))}.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.g-hero,.g-main{grid-template-columns:1fr}}
+@media (max-width:900px){
+  .app{grid-template-columns:1fr}
+  .side{position:static;height:auto;flex-direction:row;align-items:center;overflow-x:auto;padding:10px 12px}
+  .marque{border:0;padding:0}.marque div{display:none}
+  .nav{flex-direction:row}.nav .sep,.side .pied,.nav .lib-nav{display:none}
+  .nav button[aria-current="page"]::before{display:none}
+  .top{padding:12px 16px;flex-wrap:wrap}.top .sous{display:none}.recherche{width:100%;order:5}
+  .contenu{padding:16px}
+  .g2,.g3,.g4{grid-template-columns:1fr}
+  .bande-srv{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .sante{flex-direction:column;align-items:flex-start}
+}
+@media print{.side,.top .recherche,.icone-btn{display:none}.app{grid-template-columns:1fr}.vue{display:flex!important}.carte,.kpi{box-shadow:none;break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side" aria-label="Navigation">
+    <div class="marque">
+      <span class="plaque"><img src="__LOGO_CLIENT__" alt="__CLIENT__"></span>
+      <div><b>__CLIENT__</b><span>Infrastructure IRIUM iE</span></div>
+    </div>
+    <nav class="nav" id="nav"></nav>
+    <div class="pied">
+      <div class="irium"><span><img src="__LOGO_IRIUM__" alt="IRIUM"></span><span>Supervision<br>conçue par IRIUM</span></div>
+      <div id="pied-gen"></div>
+    </div>
+  </aside>
+  <main>
+    <header class="top">
+      <div style="min-width:0">
+        <h1 id="titre-vue">Vue d'ensemble</h1>
+        <div class="sous" id="sous-titre"></div>
+      </div>
+      <div class="esp"></div>
+      <span id="etat-global"></span>
+      <div class="recherche" role="search">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="q" type="search" placeholder="Serveur, utilisateur, programme, tâche…" aria-label="Recherche globale" autocomplete="off">
+        <kbd>Ctrl K</kbd>
+        <div class="resultats" id="resultats" role="listbox"></div>
+      </div>
+      <button class="icone-btn" id="theme" title="Thème clair ou sombre" aria-label="Changer de thème">
+        <svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      </button>
+    </header>
+    <div class="contenu">
+      <div class="bandeau" id="bandeau-demo" hidden>Démonstration : toutes les données de cette page sont fictives.</div>
+
+      <!-- ============ Vue d'ensemble ============ -->
+      <section class="vue" id="v-accueil" data-titre="Vue d'ensemble">
+        <div class="grille g-hero">
+          <div class="carte sante" id="sante"></div>
+          <div class="kpis" id="kpis"></div>
+        </div>
+        <div class="bande-srv" id="bande-srv"></div>
+        <div class="grille g-main">
+          <div class="carte">
+            <div class="carte-tete"><div><h2>Activité IRIUM sur 24 heures</h2><p class="aide">Programmes lancés par heure (journal agr_lds), saisie interactive et traitements planifiés</p></div></div>
+            <div id="g-activite"></div>
+          </div>
+          <div class="carte">
+            <div class="carte-tete"><div><h2>Alertes prioritaires</h2><p class="aide">Les plus graves en premier</p></div><button class="btn" data-aller="alertes">Tout voir</button></div>
+            <div id="alertes-top"></div>
+          </div>
+        </div>
+        <div class="grille g2">
+          <div class="carte"><h2>Utilisateurs les plus actifs</h2><p class="aide">Programmes lancés en interactif sur 24 h</p><div id="top-util"></div></div>
+          <div class="carte"><h2>Programmes les plus lancés</h2><p class="aide">Sur 24 h, tous types confondus</p><div id="top-prog"></div></div>
+        </div>
+        <div class="carte">
+          <div class="carte-tete"><div><h2>Schéma d'infrastructure</h2><p class="aide">État en direct de chaque serveur ; les flux indiquent les sessions Informix ouvertes vers la base</p></div><button class="btn" data-aller="schema">Plein écran</button></div>
+          <div class="schema" id="schema-accueil"></div>
+        </div>
+      </section>
+
+      <!-- ============ Serveurs ============ -->
+      <section class="vue" id="v-serveurs" data-titre="Serveurs">
+        <div class="grille g3" id="cartes-srv"></div>
+      </section>
+
+      <!-- ============ Base de données ============ -->
+      <section class="vue" id="v-base" data-titre="Base de données Informix">
+        <div class="grille g2" id="moteurs"></div>
+        <div class="grille g2">
+          <div class="carte"><h2>Espace des dbspaces</h2><p class="aide">Taux d'occupation, du plus rempli au moins rempli ; les dbspaces temporaires sont indiqués</p><div id="dbspaces"></div></div>
+          <div class="carte"><h2>Durée des derniers checkpoints</h2><p class="aide">Base principale ; au-delà du seuil, les transactions attendent</p><div id="g-ckp"></div></div>
+        </div>
+        <div class="grille g2">
+          <div class="carte"><h2>Sessions Informix par serveur d'applications</h2><p class="aide">Classement des connexions ouvertes sur la base principale, par machine cliente</p><div id="sess-hote"></div></div>
+          <div class="carte"><h2>Sessions Informix sur 7 jours</h2><p class="aide">Base principale, une mesure par collecte</p><div id="g-sessions"></div></div>
+        </div>
+      </section>
+
+      <!-- ============ Connexions IRIUM ============ -->
+      <section class="vue" id="v-connexions" data-titre="Connexions IRIUM">
+        <div class="kpis" id="kpis-cx"></div>
+        <div class="carte">
+          <div class="carte-tete">
+            <div><h2 id="cx-titre">Journal des connexions</h2><p class="aide" id="cx-aide"></p></div>
+            <div class="onglets" role="tablist" id="cx-onglets">
+              <button role="tab" aria-selected="true" data-o="journal">Journal</button>
+              <button role="tab" aria-selected="false" data-o="dernieres">Dernière connexion</button>
+              <button role="tab" aria-selected="false" data-o="classements">Classements</button>
+            </div>
+          </div>
+          <div id="cx-journal">
+            <div class="filtres">
+              <input type="search" id="f-texte" placeholder="Rechercher (utilisateur, programme, poste, IP)" aria-label="Rechercher">
+              <select id="f-util" aria-label="Utilisateur"></select>
+              <select id="f-type" aria-label="Type"><option value="">Tous les types</option><option value="interactif">Interactif</option><option value="cron">Cron (planifié)</option></select>
+              <select id="f-prog" aria-label="Programme"></select>
+              <select id="f-poste" aria-label="Poste"></select>
+              <select id="f-periode" aria-label="Période"><option value="24">24 dernières heures</option><option value="4">4 dernières heures</option><option value="1">Dernière heure</option></select>
+              <label><input type="checkbox" id="f-cours"> En cours</label>
+              <button class="btn" id="f-raz">Réinitialiser</button>
+              <button class="btn prim" id="f-csv">Exporter CSV</button>
+              <span class="compteur num" id="f-compte"></span>
+            </div>
+            <div class="tab-wrap"><table id="t-journal"></table></div>
+            <div class="pages" id="p-journal"></div>
+          </div>
+          <div id="cx-dernieres" hidden>
+            <div class="filtres">
+              <input type="search" id="d-texte" placeholder="Rechercher un utilisateur" aria-label="Rechercher un utilisateur">
+              <select id="d-type" aria-label="Type"><option value="interactif">Interactif</option><option value="cron">Cron (planifié)</option><option value="">Tous les types</option></select>
+              <select id="d-inactif" aria-label="Inactivité"><option value="0">Tous les utilisateurs</option><option value="1">Actifs dans les 24 h</option><option value="-7">Sans connexion depuis plus de 7 jours</option><option value="-30">Sans connexion depuis plus de 30 jours</option></select>
+              <button class="btn prim" id="d-csv">Exporter CSV</button>
+              <span class="compteur num" id="d-compte"></span>
+            </div>
+            <div class="tab-wrap"><table id="t-dernieres"></table></div>
+            <div class="pages" id="p-dernieres"></div>
+          </div>
+          <div id="cx-classements" hidden>
+            <div class="sec">Programmes lancés par jour et par heure (7 jours)</div>
+            <div id="chaleur"></div>
+            <div class="grille g3" style="margin-top:18px">
+              <div><div class="sec">Utilisateurs (24 h)</div><div id="cl-util"></div></div>
+              <div><div class="sec">Postes (24 h)</div><div id="cl-poste"></div></div>
+              <div><div class="sec">Traitements cron (24 h)</div><div id="cl-cron"></div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ Tâches planifiées ============ -->
+      <section class="vue" id="v-taches" data-titre="Tâches planifiées">
+        <div class="kpis" id="kpis-taches"></div>
+        <div class="carte">
+          <h2>Crontabs de tous les serveurs</h2>
+          <p class="aide">Planification traduite en clair ; exécutions relevées dans /var/log/cron sur 24 h</p>
+          <div class="filtres">
+            <input type="search" id="c-texte" placeholder="Rechercher une commande" aria-label="Rechercher une commande">
+            <select id="c-srv" aria-label="Serveur"></select>
+            <select id="c-cat" aria-label="Catégorie"></select>
+            <select id="c-util" aria-label="Compte"></select>
+            <span class="compteur num" id="c-compte"></span>
+          </div>
+          <div class="tab-wrap"><table id="t-taches"></table></div>
+        </div>
+      </section>
+
+      <!-- ============ Alertes ============ -->
+      <section class="vue" id="v-alertes" data-titre="Alertes">
+        <div class="carte">
+          <div class="filtres" id="a-filtres"></div>
+          <div class="tab-wrap"><table id="t-alertes"></table></div>
+        </div>
+      </section>
+
+      <!-- ============ Schéma ============ -->
+      <section class="vue" id="v-schema" data-titre="Schéma d'infrastructure">
+        <div class="carte">
+          <div class="carte-tete"><div><h2>Architecture IRIUM iE</h2><p class="aide">Cliquer sur un serveur pour ouvrir sa fiche. Épaisseur et étiquette des flux : sessions Informix ouvertes vers la base principale</p></div></div>
+          <div class="schema" id="schema-complet"></div>
+        </div>
+        <div class="grille g2">
+          <div class="carte"><h2>Flux vers la base principale</h2><p class="aide">Sessions Informix par machine cliente</p><div id="schema-liens"></div></div>
+          <div class="carte"><h2>Légende</h2><div id="schema-legende"></div></div>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+<div id="info" role="tooltip"></div>
+<script type="application/json" id="donnees">__DONNEES__</script>
+<script>
+(function () {
+'use strict';
+var D = JSON.parse(document.getElementById('donnees').textContent);
+var NS = 'http://www.w3.org/2000/svg';
+var ICONES = {
+  accueil: '<path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/>',
+  serveurs: '<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/>',
+  base: '<ellipse cx="12" cy="5.5" rx="8" ry="2.5"/><path d="M4 5.5v13c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5v-13"/><path d="M4 12c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5"/>',
+  connexions: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.8c1.8.7 3 2.4 3.5 5.2"/>',
+  taches: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
+  alertes: '<path d="M10.3 3.9 2 18a2 2 0 0 0 1.7 3h16.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
+  schema: '<rect x="9" y="2.5" width="6" height="5" rx="1"/><rect x="2.5" y="16.5" width="6" height="5" rx="1"/><rect x="15.5" y="16.5" width="6" height="5" rx="1"/><path d="M12 7.5v4.5M5.5 16.5V12h13v4.5"/>'
+};
+var VUES = [['accueil', "Vue d'ensemble"], ['serveurs', 'Serveurs'], ['base', 'Base de données'], ['connexions', 'Connexions IRIUM'],
+            ['taches', 'Tâches planifiées'], ['alertes', 'Alertes'], null, ['schema', "Schéma d'infrastructure"]];
+var LIB_ETAT = {ok: 'Opérationnel', attention: 'À surveiller', critique: 'Critique', injoignable: 'Injoignable',
+                haute: 'Haute', moyenne: 'Moyenne', faible: 'Faible'};
+var LIB_ROLE = {bdd: 'Base principale', repl: 'Secondaire RSS', app: "Serveur d'applications", api: 'API'};
+var FORMES = {
+  ok: '<circle cx="8" cy="8" r="6"/>',
+  moyenne: '<path d="M8 1.5 15 14H1z"/>',
+  haute: '<path d="M8 1.5 15 14H1z"/>', attention: '<path d="M8 1.5 15 14H1z"/>',
+  critique: '<rect x="2" y="2" width="12" height="12" rx="2" transform="rotate(45 8 8)"/>',
+  injoignable: '<rect x="2" y="2" width="12" height="12" rx="2" transform="rotate(45 8 8)"/>',
+  faible: '<circle cx="8" cy="8" r="5"/>'
+};
+
+// ------------------------------------------------------------------ outils
+function $(id) { return document.getElementById(id); }
+function esc(t) { return String(t == null ? '' : t).replace(/[&<>"']/g, function (c) { return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]; }); }
+function nf(n, d) { if (n == null || isNaN(n)) return '–'; return Number(n).toLocaleString('fr-FR', {minimumFractionDigits: d || 0, maximumFractionDigits: d || 0}); }
+function go(ko) { return ko == null ? '–' : ko >= 1073741824 ? nf(ko / 1073741824, 1) + ' To' : nf(ko / 1048576, ko >= 104857600 ? 0 : 1) + ' Go'; }
+function mo(m) { return m == null ? '–' : m >= 1048576 ? nf(m / 1048576, 1) + ' To' : m >= 1024 ? nf(m / 1024, m >= 102400 ? 0 : 1) + ' Go' : nf(m) + ' Mo'; }
+function etat(e, texte) { return '<span class="etat ' + e + '"><svg viewBox="0 0 16 16">' + FORMES[e] + '</svg>' + esc(texte || LIB_ETAT[e] || e) + '</span>'; }
+function niveau(v, seuil) { if (v == null || seuil == null) return ''; return v >= Math.min(98, seuil + 10) ? 'critique' : v >= seuil ? 'haute' : v >= seuil - 15 ? 'moyenne' : 'ok'; }
+function jauge(lib, v, seuil, txt, style, titre) {
+  return '<div class="jauge"' + (style ? ' style="' + style + '"' : '') + (titre ? ' title="' + esc(titre) + '"' : '') + '><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(lib) + '</span><div class="piste"><div class="rempli ' + niveau(v, seuil) + '" style="width:' + Math.max(0, Math.min(100, v || 0)) + '%"></div></div><span class="v num">' + (txt != null ? txt : (v == null ? '–' : nf(v, 0) + ' %')) + '</span></div>';
+}
+function dt(s) { if (!s) return null; var p = s.split(/[- :]/); return new Date(+p[0], +p[1] - 1, +p[2], +(p[3] || 0), +(p[4] || 0), +(p[5] || 0)); }
+var GEN = dt(D.meta.genere);
+function relatif(s) {
+  var d = dt(s); if (!d) return '–';
+  var m = Math.round((GEN - d) / 60000);
+  if (m < 1) return "à l'instant"; if (m < 60) return 'il y a ' + m + ' min';
+  var h = Math.round(m / 60); if (h < 48) return 'il y a ' + h + ' h';
+  return 'il y a ' + Math.round(h / 24) + ' j';
+}
+function dateCourte(s) { if (!s) return '–'; return s.slice(8, 10) + '/' + s.slice(5, 7) + ' ' + s.slice(11, 16); }
+function duree(a, b) {
+  var x = dt(a), y = b ? dt(b) : GEN; if (!x || !y) return '–';
+  var s = Math.max(0, Math.round((y - x) / 1000));
+  return s < 60 ? s + ' s' : s < 3600 ? Math.round(s / 60) + ' min' : Math.floor(s / 3600) + ' h ' + String(Math.round(s % 3600 / 60)).padStart(2, '0');
+}
+function uptime(s) { if (s == null) return '–'; var j = Math.floor(s / 86400); return j ? j + ' j ' + Math.floor(s % 86400 / 3600) + ' h' : Math.floor(s / 3600) + ' h'; }
+function css(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+function el(tag, attrs) { var e = document.createElementNS(NS, tag); for (var k in attrs) e.setAttribute(k, attrs[k]); return e; }
+function srv(nom) { for (var i = 0; i < D.serveurs.length; i++) if (D.serveurs[i].nom === nom) return D.serveurs[i]; return null; }
+function parRole(r) { return D.serveurs.filter(function (s) { return s.role === r; }); }
+function sombre() { return document.documentElement.getAttribute('data-theme') === 'dark' || (document.documentElement.getAttribute('data-theme') !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches); }
+
+// ------------------------------------------------------------------ info-bulle
+var info = $('info');
+function montrer(html, ev) {
+  info.innerHTML = html; info.style.display = 'block';
+  var w = info.offsetWidth, h = info.offsetHeight, x = ev.clientX + 14, y = ev.clientY + 14;
+  if (x + w > innerWidth - 8) x = ev.clientX - w - 14;
+  if (y + h > innerHeight - 8) y = ev.clientY - h - 14;
+  info.style.left = x + 'px'; info.style.top = y + 'px';
+}
+function cacher() { info.style.display = 'none'; }
+function ligneInfo(coul, lib, val) { return '<div class="ligne"><span>' + (coul ? '<i style="background:' + coul + '"></i>' : '') + esc(lib) + '</span><b class="num" style="margin:0">' + val + '</b></div>'; }
+
+// ------------------------------------------------------------------ graphiques
+function graduations(max) {
+  if (max <= 0) return [0, 1];
+  var pas = Math.pow(10, Math.floor(Math.log10(max))), n = max / pas;
+  pas *= n <= 1.5 ? 0.25 : n <= 3 ? 0.5 : n <= 7 ? 1 : 2;
+  var t = []; for (var v = 0; v <= max + pas * 0.999; v += pas) t.push(+v.toFixed(6));
+  return t;
+}
+// Barres empilées verticales : cats = libellés, series = [{nom, coul, val:[]}]
+function barresEmpilees(cont, cats, series, opt) {
+  opt = opt || {};
+  cont.innerHTML = '';
+  if (series.length > 1) {
+    var lg = document.createElement('div'); lg.className = 'legende';
+    lg.innerHTML = series.map(function (s) { return '<span><i style="background:' + css(s.coul) + '"></i>' + esc(s.nom) + '</span>'; }).join('');
+    cont.appendChild(lg);
+  }
+  var W = Math.max(320, cont.clientWidth || 600), H = opt.h || 240, g = {l: 40, r: 8, t: 8, b: 26};
+  var tot = cats.map(function (_, i) { return series.reduce(function (a, s) { return a + (s.val[i] || 0); }, 0); });
+  var ticks = graduations(Math.max.apply(null, tot.concat([opt.min || 1])));
+  var max = ticks[ticks.length - 1], iw = W - g.l - g.r, ih = H - g.t - g.b, bw = iw / cats.length;
+  var svg = el('svg', {viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': opt.titre || ''});
+  var ax = el('g', {'class': 'axe'});
+  ticks.forEach(function (t) {
+    var y = g.t + ih - t / max * ih;
+    ax.appendChild(el('line', {x1: g.l, x2: W - g.r, y1: y, y2: y, 'class': 'grille-l'}));
+    var tx = el('text', {x: g.l - 8, y: y + 4, 'text-anchor': 'end'}); tx.textContent = nf(t); ax.appendChild(tx);
+  });
+  var pasL = Math.ceil(cats.length / Math.max(1, Math.floor(iw / 48)));
+  cats.forEach(function (c, i) {
+    if (i % pasL) return;
+    var tx = el('text', {x: g.l + bw * i + bw / 2, y: H - 8, 'text-anchor': 'middle'}); tx.textContent = opt.etiq ? opt.etiq(c) : c; ax.appendChild(tx);
+  });
+  svg.appendChild(ax);
+  var largeur = Math.max(2, Math.min(28, bw - Math.max(2, bw * 0.28)));
+  cats.forEach(function (c, i) {
+    var x = g.l + bw * i + (bw - largeur) / 2, base = g.t + ih, grp = el('g', {});
+    series.forEach(function (s, k) {
+      var v = s.val[i] || 0; if (!v) return;
+      var h = v / max * ih, y = base - h, dernier = series.slice(k + 1).every(function (z) { return !z.val[i]; });
+      var hh = Math.max(0, h - (k > 0 ? 2 : 0));
+      if (dernier && hh > 4) {
+        var r = Math.min(4, largeur / 2);
+        grp.appendChild(el('path', {d: 'M' + x + ',' + (y + hh) + 'V' + (y + r) + 'Q' + x + ',' + y + ' ' + (x + r) + ',' + y + 'H' + (x + largeur - r) + 'Q' + (x + largeur) + ',' + y + ' ' + (x + largeur) + ',' + (y + r) + 'V' + (y + hh) + 'Z', fill: css(s.coul)}));
+      } else grp.appendChild(el('rect', {x: x, y: y, width: largeur, height: hh, fill: css(s.coul)}));
+      base = y;
+    });
+    var zone = el('rect', {x: g.l + bw * i, y: g.t, width: bw, height: ih, fill: 'transparent'});
+    zone.addEventListener('mousemove', function (ev) {
+      montrer('<b>' + esc(opt.titreInfo ? opt.titreInfo(c) : c) + '</b>' + series.map(function (s) { return ligneInfo(css(s.coul), s.nom, nf(s.val[i] || 0)); }).join('') + (series.length > 1 ? ligneInfo('', 'Total', nf(tot[i])) : ''), ev);
+      grp.style.opacity = 0.8;
+    });
+    zone.addEventListener('mouseleave', function () { cacher(); grp.style.opacity = 1; });
+    svg.appendChild(grp); svg.appendChild(zone);
+  });
+  if (opt.seuil != null) {
+    var ys = g.t + ih - Math.min(opt.seuil, max) / max * ih;
+    svg.appendChild(el('line', {x1: g.l, x2: W - g.r, y1: ys, y2: ys, stroke: css('--crit'), 'stroke-width': 1.5, 'stroke-dasharray': '5 4'}));
+    var st = el('text', {x: W - g.r, y: ys - 5, 'text-anchor': 'end', fill: css('--ink-2'), 'font-size': 11}); st.textContent = opt.seuilLib || ('seuil ' + opt.seuil); svg.appendChild(st);
+  }
+  var w = document.createElement('div'); w.className = 'graph'; w.appendChild(svg); cont.appendChild(w);
+}
+// Courbes (même échelle) avec réticule : pts = [{t, ...}], series = [{cle, nom, coul}]
+function courbes(cont, pts, series, opt) {
+  opt = opt || {};
+  cont.innerHTML = '';
+  if (!pts.length) { cont.innerHTML = '<div class="vide">Pas encore d\'historique</div>'; return; }
+  if (series.length > 1) {
+    var lg = document.createElement('div'); lg.className = 'legende';
+    lg.innerHTML = series.map(function (s) { return '<span><i style="background:' + css(s.coul) + '"></i>' + esc(s.nom) + '</span>'; }).join('');
+    cont.appendChild(lg);
+  }
+  var W = Math.max(300, cont.clientWidth || 500), H = opt.h || 180, g = {l: 40, r: 10, t: 8, b: 24};
+  var vals = []; pts.forEach(function (p) { series.forEach(function (s) { if (p[s.cle] != null) vals.push(p[s.cle]); }); });
+  var ticks = graduations(opt.max || Math.max.apply(null, vals.concat([1]))), max = ticks[ticks.length - 1];
+  var iw = W - g.l - g.r, ih = H - g.t - g.b, n = pts.length;
+  var X = function (i) { return g.l + (n === 1 ? iw / 2 : i / (n - 1) * iw); }, Y = function (v) { return g.t + ih - v / max * ih; };
+  var svg = el('svg', {viewBox: '0 0 ' + W + ' ' + H, role: 'img'});
+  var ax = el('g', {'class': 'axe'});
+  ticks.forEach(function (t) { var y = Y(t); ax.appendChild(el('line', {x1: g.l, x2: W - g.r, y1: y, y2: y, 'class': 'grille-l'})); var tx = el('text', {x: g.l - 8, y: y + 4, 'text-anchor': 'end'}); tx.textContent = nf(t) + (opt.unite || ''); ax.appendChild(tx); });
+  var jours = {}; pts.forEach(function (p, i) { var j = p.t.slice(0, 10); if (!(j in jours)) jours[j] = i; });
+  Object.keys(jours).forEach(function (j, k) { if (k === 0 && jours[j] > n * 0.05) {} var tx = el('text', {x: X(jours[j]), y: H - 6, 'text-anchor': 'start'}); tx.textContent = j.slice(8, 10) + '/' + j.slice(5, 7); ax.appendChild(tx); });
+  svg.appendChild(ax);
+  series.forEach(function (s) {
+    var d = '', on = false;
+    pts.forEach(function (p, i) { var v = p[s.cle]; if (v == null) { on = false; return; } d += (on ? 'L' : 'M') + X(i).toFixed(1) + ',' + Y(v).toFixed(1); on = true; });
+    svg.appendChild(el('path', {d: d, fill: 'none', stroke: css(s.coul), 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round'}));
+  });
+  var rt = el('line', {y1: g.t, y2: g.t + ih, stroke: css('--ink-3'), 'stroke-width': 1, visibility: 'hidden'}); svg.appendChild(rt);
+  var pointsG = series.map(function (s) { var c = el('circle', {r: 4.5, fill: css(s.coul), stroke: css('--surface'), 'stroke-width': 2, visibility: 'hidden'}); svg.appendChild(c); return c; });
+  var zone = el('rect', {x: g.l, y: g.t, width: iw, height: ih, fill: 'transparent'}); svg.appendChild(zone);
+  zone.addEventListener('mousemove', function (ev) {
+    var bb = svg.getBoundingClientRect(), x = (ev.clientX - bb.left) / bb.width * W, i = Math.max(0, Math.min(n - 1, Math.round((x - g.l) / iw * (n - 1))));
+    rt.setAttribute('x1', X(i)); rt.setAttribute('x2', X(i)); rt.setAttribute('visibility', 'visible');
+    series.forEach(function (s, k) { var v = pts[i][s.cle]; if (v == null) { pointsG[k].setAttribute('visibility', 'hidden'); return; } pointsG[k].setAttribute('cx', X(i)); pointsG[k].setAttribute('cy', Y(v)); pointsG[k].setAttribute('visibility', 'visible'); });
+    montrer('<b>' + dateCourte(pts[i].t) + '</b>' + series.map(function (s) { return ligneInfo(css(s.coul), s.nom, pts[i][s.cle] == null ? '–' : nf(pts[i][s.cle], opt.dec || 0) + (opt.unite || '')); }).join(''), ev);
+  });
+  zone.addEventListener('mouseleave', function () { cacher(); rt.setAttribute('visibility', 'hidden'); pointsG.forEach(function (c) { c.setAttribute('visibility', 'hidden'); }); });
+  if (opt.seuil != null && opt.seuil <= max) svg.appendChild(el('line', {x1: g.l, x2: W - g.r, y1: Y(opt.seuil), y2: Y(opt.seuil), stroke: css('--crit'), 'stroke-width': 1.5, 'stroke-dasharray': '5 4'}));
+  var w = document.createElement('div'); w.className = 'graph'; w.appendChild(svg); cont.appendChild(w);
+}
+function sparkline(vals, coul) {
+  vals = vals.filter(function (v) { return v != null; });
+  if (vals.length < 2) return '';
+  var max = Math.max.apply(null, vals), min = Math.min.apply(null, vals), W = 90, H = 30, n = vals.length;
+  var d = vals.map(function (v, i) { return (i ? 'L' : 'M') + (i / (n - 1) * (W - 4) + 2).toFixed(1) + ',' + (H - 3 - (max === min ? 0.5 : (v - min) / (max - min)) * (H - 6)).toFixed(1); }).join('');
+  var ly = H - 3 - (max === min ? 0.5 : (vals[n - 1] - min) / (max - min)) * (H - 6);
+  return '<svg class="spark" viewBox="0 0 ' + W + ' ' + H + '" aria-hidden="true"><path d="' + d + '" fill="none" stroke="' + coul + '" stroke-width="2" stroke-linejoin="round"/><circle cx="' + (W - 2) + '" cy="' + ly.toFixed(1) + '" r="3" fill="' + coul + '"/></svg>';
+}
+// Barres horizontales en HTML (libellés et valeurs directs)
+function barresH(cont, items, opt) {
+  opt = opt || {};
+  if (!items.length) { cont.innerHTML = '<div class="vide">Aucune donnée</div>'; return; }
+  var max = Math.max.apply(null, items.map(function (x) { return x.v; }).concat([1]));
+  cont.innerHTML = '<div class="barres-h">' + items.map(function (x, i) {
+    return '<div class="bh" data-i="' + i + '"><span class="l" title="' + esc(x.l) + '">' + (opt.lien ? '<button class="lien" data-u="' + esc(x.l) + '">' + esc(x.l) + '</button>' : esc(x.l)) + '</span><span class="p"><span style="width:' + (x.v / max * 100).toFixed(1) + '%;background:' + (x.coul || css(opt.coul || '--s1')) + '"></span></span><span class="v num">' + nf(x.v) + (x.s ? ' <small>' + esc(x.s) + '</small>' : '') + '</span></div>';
+  }).join('') + '</div>';
+  if (opt.lien) cont.querySelectorAll('.lien').forEach(function (b) { b.addEventListener('click', function () { opt.lien(b.getAttribute('data-u')); }); });
+}
+function anneau(score, e) {
+  var r = 64, c = 2 * Math.PI * r, coul = css(e === 'ok' ? '--good' : e === 'critique' ? '--crit' : '--serious');
+  return '<div class="anneau"><svg viewBox="0 0 150 150"><circle cx="75" cy="75" r="' + r + '" fill="none" stroke="' + css('--surface-2') + '" stroke-width="13"/><circle cx="75" cy="75" r="' + r + '" fill="none" stroke="' + coul + '" stroke-width="13" stroke-linecap="round" stroke-dasharray="' + (c * score / 100).toFixed(1) + ' ' + c.toFixed(1) + '"/></svg><div class="centre"><div><b class="num">' + score + '</b><br><span>sur 100</span></div></div></div>';
+}
+
+// ------------------------------------------------------------------ navigation
+var vueActive = 'accueil';
+function construireNav() {
+  var al = D.resume.alertes, nb = al.critique + al.haute;
+  $('nav').innerHTML = VUES.map(function (v) {
+    if (!v) return '<div class="sep"></div>';
+    var compte = v[0] === 'alertes' && D.alertes.length ? '<span class="compte' + (al.critique ? ' c' : '') + '">' + D.alertes.length + '</span>' :
+      v[0] === 'serveurs' ? '<span class="compte">' + D.resume.en_ligne + '/' + D.resume.total + '</span>' : '';
+    return '<button data-vue="' + v[0] + '"><svg viewBox="0 0 24 24">' + ICONES[v[0]] + '</svg><span class="lib-nav">' + esc(v[1]) + '</span>' + compte + '</button>';
+  }).join('');
+  $('nav').querySelectorAll('button').forEach(function (b) { b.addEventListener('click', function () { aller(b.getAttribute('data-vue')); }); });
+  document.querySelectorAll('[data-aller]').forEach(function (b) { b.addEventListener('click', function () { aller(b.getAttribute('data-aller')); }); });
+}
+var rendus = {};
+function aller(v, ancre) {
+  if (!$('v-' + v)) v = 'accueil';
+  vueActive = v;
+  document.querySelectorAll('.vue').forEach(function (s) { s.classList.toggle('active', s.id === 'v-' + v); });
+  $('nav').querySelectorAll('button').forEach(function (b) { if (b.getAttribute('data-vue') === v) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
+  $('titre-vue').textContent = $('v-' + v).getAttribute('data-titre');
+  if (location.hash.slice(1) !== v) history.replaceState(null, '', '#' + v);
+  if (!rendus[v]) { rendus[v] = true; RENDU[v](); }
+  if (ancre) { var a = $(ancre); if (a) { a.scrollIntoView({behavior: 'smooth', block: 'start'}); a.style.outline = '2px solid ' + css('--brand'); setTimeout(function () { a.style.outline = ''; }, 1600); } }
+  else window.scrollTo(0, 0);
+}
+
+// ------------------------------------------------------------------ données dérivées
+var CX = D.connexions;
+var BDD = parRole('bdd')[0], REPL = parRole('repl')[0];
+function compter(liste, cle, filtre) {
+  var m = {}; liste.forEach(function (x) { if (filtre && !filtre(x)) return; var k = x[cle] || '(vide)'; m[k] = (m[k] || 0) + 1; });
+  return Object.keys(m).map(function (k) { return {l: k, v: m[k]}; }).sort(function (a, b) { return b.v - a.v; });
+}
+function heures24() {
+  var fin = dt(D.meta.genere), cats = [];
+  for (var i = 23; i >= 0; i--) { var d = new Date(fin.getTime() - i * 3600000); cats.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0')); }
+  return cats;
+}
+function parHeure(types) {
+  var m = {};
+  if (CX && CX.par_heure && CX.par_heure.length) CX.par_heure.forEach(function (x) { m[x.heure + '|' + x.type] = (m[x.heure + '|' + x.type] || 0) + x.nombre; });
+  else if (CX) CX.detail.forEach(function (x) { var k = x.debut.slice(0, 13) + '|' + x.type; m[k] = (m[k] || 0) + 1; });
+  return m;
+}
+function dbspaceMin(s) {
+  var best = null;
+  ((s && s.informix && s.informix.dbspaces) || []).forEach(function (d) { if (d.temp || d.sb || d.journaux || !d.taille_mo) return; var p = d.libre_mo / d.taille_mo * 100; if (!best || p < best.p) best = {p: p, nom: d.nom, libre: d.libre_mo}; });
+  return best;
+}
+function ckpMax(s) { var c = ((s && s.informix && s.informix.checkpoints) || []).map(function (x) { return x.total_s; }); return c.length ? Math.max.apply(null, c) : null; }
+
+// ------------------------------------------------------------------ vue d'ensemble
+function kpi(lib, val, unite, sub, e, spark) {
+  return '<div class="kpi"><span class="lib">' + esc(lib) + '</span><span class="val num">' + val + (unite ? '<small>' + unite + '</small>' : '') + '</span>' + (e ? '<span class="et">' + etat(e) + '</span>' : '') + '<span class="sub">' + sub + '</span>' + (spark || '') + '</div>';
+}
+function rendreAccueil() {
+  var r = D.resume, al = r.alertes;
+  $('sante').innerHTML = anneau(r.score, r.statut) + '<div><h2>Santé de l\'infrastructure</h2><p class="aide" style="margin:4px 0 0">' + r.en_ligne + ' serveur(s) en ligne sur ' + r.total + ' · généré le ' + dateCourte(D.meta.genere) + '</p><div class="puces">' +
+    ['critique', 'haute', 'moyenne', 'faible'].map(function (g) { return etat(g, al[g] + ' ' + LIB_ETAT[g].toLowerCase()); }).join('') + '</div></div>';
+  var k = CX && CX.kpi, s = D.meta.seuils, db = dbspaceMin(BDD), ck = ckpMax(BDD), apis = [];
+  D.serveurs.forEach(function (x) { (x.api || []).forEach(function (a) { apis.push(a); }); });
+  var apiMs = apis.length ? Math.max.apply(null, apis.map(function (a) { return a.ms; })) : null, apiOk = apis.filter(function (a) { return a.ok; }).length;
+  var hs = BDD ? BDD.historique : [], ha = parRole('api')[0] ? parRole('api')[0].historique : [];
+  var smax = Math.max.apply(null, hs.map(function (h) { return h.sessions || 0; }).concat([0]));
+  $('kpis').innerHTML = [
+    kpi('Serveurs en ligne', r.en_ligne, '/ ' + r.total, D.serveurs.filter(function (x) { return x.statut === 'ok'; }).length + ' sans alerte haute', r.en_ligne === r.total ? 'ok' : 'critique'),
+    kpi('Utilisateurs IRIUM (24 h)', k ? nf(k.utilisateurs) : '–', '', k ? 'sur ' + nf(k.postes) + ' postes · pic à ' + (k.pic_heure || '–') : 'journal agr_lds non collecté', null),
+    kpi('Programmes lancés (24 h)', k ? nf(k.programmes) : '–', '', k ? nf(k.cron) + ' en cron (' + nf(k.programmes ? k.cron / k.programmes * 100 : 0) + ' %) · ' + nf(k.en_cours) + ' en cours' : '–', null),
+    kpi('Sessions Informix', BDD && BDD.informix ? nf(BDD.informix.sessions) : '–', '', 'max 7 j : ' + nf(smax), null, sparkline(hs.map(function (h) { return h.sessions; }), css('--s1'))),
+    kpi('Espace libre base', db ? nf(db.p, db.p < 10 ? 1 : 0) : '–', '%', db ? 'dbspace le plus rempli : ' + esc(db.nom) + ' (' + mo(db.libre) + ' libres)' : '–', db ? (db.p < 2 ? 'critique' : db.p < s.SEUIL_DBSPACE_LIBRE ? 'haute' : 'ok') : null),
+    kpi('Cache Informix', BDD && BDD.informix && BDD.informix.cache_pct != null ? nf(BDD.informix.cache_pct, 1) : '–', '%', 'lectures servies par la mémoire', BDD && BDD.informix && BDD.informix.cache_pct != null ? (BDD.informix.cache_pct >= 95 ? 'ok' : 'moyenne') : null),
+    kpi('Checkpoint le plus long', ck != null ? nf(ck, 1) : '–', 's', 'seuil ' + nf(s.SEUIL_CHECKPOINT_S) + ' s · 20 derniers', ck == null ? null : ck >= 2 * s.SEUIL_CHECKPOINT_S ? 'haute' : ck >= s.SEUIL_CHECKPOINT_S ? 'moyenne' : 'ok'),
+    kpi('API', apiMs != null ? nf(apiMs) : '–', 'ms', apis.length ? apiOk + '/' + apis.length + ' service(s) disponibles' : 'aucune URL déclarée', apis.length ? (apiOk < apis.length ? 'critique' : apiMs >= s.SEUIL_API_MS ? 'moyenne' : 'ok') : null, sparkline(ha.map(function (h) { return h.api_ms; }), css('--s1')))
+  ].join('');
+  $('bande-srv').innerHTML = D.serveurs.map(function (x) {
+    var sy = x.systeme || {}, m = sy.memoire || {}, dmax = Math.max.apply(null, (sy.disques || []).map(function (d) { return d.pct; }).concat([0]));
+    return '<button class="srv-mini" data-srv="' + esc(x.nom) + '"><div class="t"><b>' + esc(x.nom) + '</b>' + etat(x.statut) + '</div><div class="h">' + esc(LIB_ROLE[x.role] || x.role) + ' · ' + esc(x.hote) + '</div>' +
+      jauge('CPU', sy.cpu_pct, s.SEUIL_CPU) + jauge('RAM', m.pct, s.SEUIL_MEMOIRE) + jauge('Disque', dmax, s.SEUIL_DISQUE) + '</button>';
+  }).join('');
+  $('bande-srv').querySelectorAll('[data-srv]').forEach(function (b) { b.addEventListener('click', function () { aller('serveurs', 'srv-' + b.getAttribute('data-srv')); }); });
+  // activité 24 h
+  if (CX) {
+    var cats = heures24(), m = parHeure();
+    barresEmpilees($('g-activite'), cats, [
+      {nom: 'Interactif', coul: '--s1', val: cats.map(function (c) { return m[c + '|interactif'] || 0; })},
+      {nom: 'Cron (planifié)', coul: '--s2', val: cats.map(function (c) { return m[c + '|cron'] || 0; })}
+    ], {h: 330, etiq: function (c) { return c.slice(11) + 'h'; }, titreInfo: function (c) { return c.slice(8, 10) + '/' + c.slice(5, 7) + ' de ' + c.slice(11) + 'h à ' + String(+c.slice(11) + 1).padStart(2, '0') + 'h'; }, titre: 'Programmes lancés par heure'});
+    barresH($('top-util'), compter(CX.detail, 'utilisateur', function (x) { return x.type !== 'cron'; }).slice(0, 8), {lien: filtrerUtilisateur});
+    barresH($('top-prog'), compter(CX.detail, 'programme').slice(0, 8), {coul: '--s1'});
+  } else ['g-activite', 'top-util', 'top-prog'].forEach(function (i) { $(i).innerHTML = '<div class="vide">Journal des connexions (agr_lds) non collecté</div>'; });
+  rendreAlertesListe($('alertes-top'), D.alertes.slice(0, 6), true);
+  schema($('schema-accueil'));
+}
+function rendreAlertesListe(cont, liste, compact) {
+  if (!liste.length) { cont.innerHTML = '<div class="vide">' + etat('ok', 'Aucune alerte') + '</div>'; return; }
+  cont.innerHTML = '<div style="display:flex;flex-direction:column;gap:8px">' + liste.map(function (a) {
+    return '<div style="display:flex;gap:10px;align-items:flex-start;padding:9px 10px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2)">' + etat(a.gravite) +
+      '<div style="min-width:0"><div style="font-weight:600">' + esc(a.message) + '</div><div style="font-size:12px;color:var(--ink-3)">' + esc(a.serveur) + ' · ' + esc(a.domaine) + (a.valeur != null ? ' · valeur ' + nf(a.valeur, a.valeur % 1 ? 1 : 0) + (a.seuil != null ? ' (seuil ' + nf(a.seuil) + ')' : '') : '') + '</div></div></div>';
+  }).join('') + '</div>';
+}
+
+// ------------------------------------------------------------------ serveurs
+function rendreServeurs() {
+  var s = D.meta.seuils;
+  $('cartes-srv').innerHTML = D.serveurs.map(function (x) {
+    var sy = x.systeme || {}, m = sy.memoire || {};
+    if (!x.systeme) return '<div class="carte srv-carte" id="srv-' + esc(x.nom) + '"><div class="ident"><b>' + esc(x.nom) + '</b><span class="badge">' + esc(LIB_ROLE[x.role]) + '</span>' + etat(x.statut) + '</div><div class="vide">Aucune donnée reçue de ' + esc(x.hote) + '</div></div>';
+    var procs = Object.keys(sy.processus || {}).filter(function (p) { return sy.processus[p].nombre; });
+    return '<div class="carte srv-carte" id="srv-' + esc(x.nom) + '">' +
+      '<div class="ident"><b>' + esc(x.nom) + '</b><span class="badge">' + esc(LIB_ROLE[x.role]) + '</span><span style="margin-left:auto">' + etat(x.statut) + '</span></div>' +
+      '<dl><dt>Hôte</dt><dd>' + esc(sy.hote || x.hote) + '</dd><dt>Système</dt><dd title="' + esc(sy.os) + '">' + esc((sy.os || '').replace('Red Hat Enterprise Linux', 'RHEL').replace(' Server', '')) + '</dd>' +
+      '<dt>Ressources</dt><dd>' + nf(sy.ncpu) + ' vCPU · ' + go(m.total_ko) + ' RAM</dd><dt>Démarré</dt><dd>' + uptime(sy.uptime_s) + '</dd>' +
+      '<dt>Collecte</dt><dd>' + relatif(x.horodatage) + ' · score ' + x.score + '/100</dd></dl>' +
+      jauge('CPU', sy.cpu_pct, s.SEUIL_CPU) + jauge('RAM', m.pct, s.SEUIL_MEMOIRE) + jauge('Swap', m.swap_pct, 20) +
+      jauge('Charge', sy.ncpu ? Math.min(100, (sy.charge || [0])[0] / sy.ncpu * 100) : null, 100, nf((sy.charge || [null])[0], 1)) +
+      '<div class="sec">Systèmes de fichiers</div>' + (sy.disques || []).filter(function (d) { return d.taille_ko > 1048576; }).map(function (d) { return jauge(d.montage, d.pct, s.SEUIL_DISQUE, null, 'grid-template-columns:minmax(60px,130px) 1fr 46px', d.montage + ' · ' + go(d.taille_ko - d.utilise_ko) + ' libres sur ' + go(d.taille_ko)); }).join('') +
+      (procs.length ? '<div class="sec">Processus suivis</div><div class="chips">' + procs.map(function (p) { var q = sy.processus[p]; return '<span class="chip"><b class="num">' + nf(q.nombre) + '</b> ' + esc(p) + ' · ' + go(q.rss_ko) + '</span>'; }).join('') + '</div>' : '') +
+      '<div class="sec">Services</div><div class="chips">' + Object.keys(sy.services || {}).map(function (k) { return etat(sy.services[k] === 'active' ? 'ok' : 'critique', k + ' : ' + sy.services[k]); }).join('') + '</div>' +
+      '<div class="sec">CPU et mémoire sur 7 jours</div><div class="hist" data-srv="' + esc(x.nom) + '"></div>' +
+      '<details><summary>Processus les plus actifs, ports et erreurs de collecte</summary><div class="tab-wrap" style="margin-top:8px"><table><thead><tr><th>Commande</th><th>Compte</th><th class="r">CPU</th><th class="r">Mémoire</th><th>Durée</th></tr></thead><tbody>' +
+      (sy.top_processus || []).map(function (p) { return '<tr><td class="mono">' + esc(p.commande) + '</td><td>' + esc(p.utilisateur) + '</td><td class="r num">' + nf(p.cpu, 1) + ' %</td><td class="r num">' + nf(p.mem, 1) + ' %</td><td class="num">' + esc(p.duree) + '</td></tr>'; }).join('') +
+      '</tbody></table></div><p style="font-size:12.5px;color:var(--ink-2)">Ports en écoute : ' + esc((sy.ports_ecoute || []).join(', ') || '–') + ' · connexions TCP établies : ' + nf(sy.tcp_etablies) + ' · sessions SSH : ' + nf(sy.sessions_ssh) + '</p>' +
+      (x.erreurs && x.erreurs.length ? '<p style="font-size:12.5px;color:var(--ink-2)">Erreurs : ' + esc(x.erreurs.join(' · ')) + '</p>' : '') + '</details></div>';
+  }).join('');
+  document.querySelectorAll('.hist').forEach(function (c) { var x = srv(c.getAttribute('data-srv')); courbes(c, x.historique || [], [{cle: 'cpu', nom: 'CPU', coul: '--s1'}, {cle: 'mem', nom: 'Mémoire', coul: '--s2'}], {max: 100, unite: ' %', h: 150}); });
+}
+
+// ------------------------------------------------------------------ base de données
+function carteMoteur(x) {
+  if (!x) return '';
+  var i = x.informix, s = D.meta.seuils;
+  if (!i || i.etat !== 'actif') return '<div class="carte"><div class="ident"><h2>' + esc(x.nom) + ' · ' + esc(LIB_ROLE[x.role]) + '</h2></div>' + etat('critique', 'Moteur arrêté ou non détecté') + '</div>';
+  var e = i.entete || {}, lg = i.logs || {}, rep = i.replication || {}, ck = ckpMax(x);
+  return '<div class="carte"><div class="carte-tete"><div><h2>' + esc(x.nom) + ' · ' + esc(LIB_ROLE[x.role]) + '</h2><p class="aide">' + esc(x.hote) + '</p></div>' + etat(x.statut) + '</div>' +
+    '<div class="kpis" style="grid-template-columns:repeat(3,minmax(0,1fr))">' +
+    kpi('Version', '<span style="font-size:19px">' + esc(e.version) + '</span>', '', esc(e.mode), null) +
+    kpi('Sessions', nf(i.sessions), '', 'démarré depuis ' + esc((e.depuis || '').replace('days', 'j')), null) +
+    kpi('Mémoire du moteur', go(e.memoire_ko), '', 'cache ' + (i.cache_pct != null ? nf(i.cache_pct, 1) + ' %' : '–'), null) +
+    kpi('Checkpoint max', ck != null ? nf(ck, 1) : '–', 's', 'seuil ' + nf(s.SEUIL_CHECKPOINT_S) + ' s', ck == null ? null : ck >= s.SEUIL_CHECKPOINT_S ? 'moyenne' : 'ok') +
+    kpi('Journaux logiques', nf(lg.nombre), '', nf(lg.non_sauvegardes) + ' non sauvegardé(s)', lg.nombre && lg.non_sauvegardes > lg.nombre / 2 ? 'haute' : 'ok') +
+    kpi(x.role === 'bdd' ? 'Secondaires' : 'Retard de réplication', x.role === 'bdd' ? nf((rep.serveurs || []).length) : nf(rep.retard_pages), x.role === 'bdd' ? '' : 'pages',
+        x.role === 'bdd' ? (rep.serveurs || []).map(function (r) { return esc(r.nom) + ' : ' + esc(r.etat); }).join(', ') || 'aucun secondaire déclaré' : 'seuil ' + nf(s.SEUIL_RETARD_RSS),
+        x.role === 'bdd' ? ((rep.serveurs || []).every(function (r) { return r.etat.toLowerCase() === 'active'; }) && (rep.serveurs || []).length ? 'ok' : 'moyenne') : (rep.retard_pages >= s.SEUIL_RETARD_RSS ? 'haute' : 'ok')) +
+    '</div></div>';
+}
+function rendreBase() {
+  $('moteurs').innerHTML = carteMoteur(BDD) + carteMoteur(REPL);
+  var dbs = ((BDD && BDD.informix && BDD.informix.dbspaces) || []).slice().sort(function (a, b) { return (b.taille_mo - b.libre_mo) / b.taille_mo - (a.taille_mo - a.libre_mo) / a.taille_mo; });
+  var seuil = 100 - D.meta.seuils.SEUIL_DBSPACE_LIBRE;
+  $('dbspaces').innerHTML = dbs.length ? dbs.map(function (d) {
+    var p = d.taille_mo ? (d.taille_mo - d.libre_mo) / d.taille_mo * 100 : 0;
+    var neutre = d.temp || d.sb || d.journaux;
+    return jauge(d.nom, p, neutre ? null : seuil, (neutre ? '<span class="badge">' + (d.temp ? 'temp' : d.sb ? 'blob' : 'journaux') + '</span> ' : '') + mo(d.libre_mo) + ' libres · ' + nf(p, p > 99 ? 1 : 0) + ' %',
+      'grid-template-columns:90px 1fr 210px', d.nom + ' · ' + mo(d.libre_mo) + ' libres sur ' + mo(d.taille_mo) + (d.temp ? ' · temporaire' : d.sb ? ' · smart blob' : d.journaux ? ' · journaux (plein par construction, sans alerte)' : ''));
+  }).join('') : '<div class="vide">Non disponible</div>';
+  var ckp = (BDD && BDD.informix && BDD.informix.checkpoints) || [];
+  if (ckp.length) barresEmpilees($('g-ckp'), ckp.map(function (c) { return c.heure; }), [{nom: 'Durée totale (s)', coul: '--s1', val: ckp.map(function (c) { return c.total_s; })}],
+    {h: 230, seuil: D.meta.seuils.SEUIL_CHECKPOINT_S, seuilLib: 'seuil ' + D.meta.seuils.SEUIL_CHECKPOINT_S + ' s', min: D.meta.seuils.SEUIL_CHECKPOINT_S * 1.2, etiq: function (c) { return c.slice(0, 5); }, titreInfo: function (c) { var x = ckp.filter(function (k) { return k.heure === c; })[0]; return 'Checkpoint de ' + c + ' (' + x.declencheur + ', blocage ' + nf(x.blocage_s, 1) + ' s)'; }});
+  else $('g-ckp').innerHTML = '<div class="vide">Non disponible</div>';
+  var noms = {}; D.serveurs.forEach(function (s) { noms[(s.hote || '').split('.')[0].toLowerCase()] = s.nom; });
+  barresH($('sess-hote'), ((BDD && BDD.informix && BDD.informix.sessions_par_hote) || []).map(function (h) { var n = noms[h.hote.toLowerCase()]; return {l: n ? n + ' · ' + h.hote : h.hote, v: h.nombre}; }));
+  courbes($('g-sessions'), (BDD && BDD.historique) || [], [{cle: 'sessions', nom: 'Sessions', coul: '--s1'}], {h: 220});
+}
+
+// ------------------------------------------------------------------ connexions
+var etatJ = {page: 0, tri: 'debut', sens: -1}, etatD = {page: 0, tri: 'derniere', sens: -1};
+function options(sel, valeurs, tous) {
+  var v = sel.value;
+  sel.innerHTML = '<option value="">' + esc(tous) + '</option>' + valeurs.map(function (x) { return '<option>' + esc(x) + '</option>'; }).join('');
+  sel.value = v;
+}
+function uniques(cle) { var m = {}; CX.detail.forEach(function (x) { if (x[cle]) m[x[cle]] = 1; }); return Object.keys(m).sort(); }
+function filtrerUtilisateur(u) {
+  aller('connexions');
+  ongletCx('journal');
+  $('f-util').value = u; $('f-texte').value = ''; etatJ.page = 0; rendreJournal();
+}
+function lignesJournal() {
+  var t = $('f-texte').value.trim().toLowerCase(), u = $('f-util').value, ty = $('f-type').value, p = $('f-prog').value, po = $('f-poste').value,
+      per = +$('f-periode').value, cours = $('f-cours').checked, lim = new Date(GEN.getTime() - per * 3600000);
+  var l = CX.detail.filter(function (x) {
+    if (u && x.utilisateur !== u) return false; if (ty && x.type !== ty) return false; if (p && x.programme !== p) return false; if (po && x.poste !== po) return false;
+    if (cours && x.fin) return false; if (per < 24 && dt(x.debut) < lim) return false;
+    if (t && (x.utilisateur + ' ' + x.programme + ' ' + x.poste + ' ' + x.ip).toLowerCase().indexOf(t) < 0) return false;
+    return true;
+  });
+  var k = etatJ.tri, s = etatJ.sens;
+  l.sort(function (a, b) { var x = k === 'duree' ? (dt(a.fin || D.meta.genere) - dt(a.debut)) : a[k] || '', y = k === 'duree' ? (dt(b.fin || D.meta.genere) - dt(b.debut)) : b[k] || ''; return x < y ? -s : x > y ? s : 0; });
+  return l;
+}
+function entete(cols, etatT, rendu) {
+  return '<thead><tr>' + cols.map(function (c) { return '<th class="tri' + (c[2] ? ' r' : '') + '" data-k="' + c[0] + '">' + esc(c[1]) + '<span class="fl">' + (etatT.tri === c[0] ? (etatT.sens > 0 ? '▲' : '▼') : '') + '</span></th>'; }).join('') + '</tr></thead>';
+}
+function brancherTri(table, etatT, rendu) {
+  table.querySelectorAll('th.tri').forEach(function (th) { th.addEventListener('click', function () { var k = th.getAttribute('data-k'); if (etatT.tri === k) etatT.sens = -etatT.sens; else { etatT.tri = k; etatT.sens = k === 'debut' || k === 'derniere' || k === 'nombre' ? -1 : 1; } etatT.page = 0; rendu(); }); });
+}
+function pagination(cont, etatT, total, rendu) {
+  var n = Math.max(1, Math.ceil(total / 50));
+  cont.innerHTML = '<span>Page ' + (etatT.page + 1) + ' sur ' + n + '</span><button ' + (etatT.page ? '' : 'disabled') + ' data-p="-1">Précédente</button><button ' + (etatT.page < n - 1 ? '' : 'disabled') + ' data-p="1">Suivante</button>';
+  cont.querySelectorAll('button').forEach(function (b) { b.addEventListener('click', function () { etatT.page += +b.getAttribute('data-p'); rendu(); }); });
+}
+function rendreJournal() {
+  var l = lignesJournal(), page = l.slice(etatJ.page * 50, etatJ.page * 50 + 50);
+  $('f-compte').textContent = nf(l.length) + ' programme(s)';
+  var cols = [['debut', 'Début'], ['duree', 'Durée'], ['utilisateur', 'Utilisateur'], ['programme', 'Programme'], ['poste', 'Poste'], ['ip', 'Adresse IP'], ['type', 'Type']];
+  $('t-journal').innerHTML = entete(cols, etatJ) + '<tbody>' + (page.length ? page.map(function (x) {
+    return '<tr><td class="num">' + dateCourte(x.debut) + '</td><td class="num">' + (x.fin ? duree(x.debut, x.fin) : etat('ok', 'en cours · ' + duree(x.debut))) + '</td><td><button class="lien" data-u="' + esc(x.utilisateur) + '">' + esc(x.utilisateur) + '</button></td><td class="mono">' + esc(x.programme) + '</td><td>' + esc(x.poste) + '</td><td class="mono">' + esc(x.ip) + '</td><td>' + (x.type === 'cron' ? '<span class="badge">cron</span>' : '<span class="badge marque">interactif</span>') + '</td></tr>';
+  }).join('') : '<tr><td colspan="7" class="vide">Aucun programme ne correspond aux filtres</td></tr>') + '</tbody>';
+  brancherTri($('t-journal'), etatJ, rendreJournal);
+  $('t-journal').querySelectorAll('.lien').forEach(function (b) { b.addEventListener('click', function () { $('f-util').value = b.getAttribute('data-u'); etatJ.page = 0; rendreJournal(); }); });
+  pagination($('p-journal'), etatJ, l.length, rendreJournal);
+}
+function lignesDernieres() {
+  var t = $('d-texte').value.trim().toLowerCase(), ty = $('d-type').value, ina = +$('d-inactif').value;
+  var m = {};
+  (CX.derniere_connexion || []).forEach(function (x) {
+    if (ty && x.type !== ty) return;
+    var e = m[x.utilisateur]; if (!e) e = m[x.utilisateur] = {utilisateur: x.utilisateur, derniere: x.derniere, nombre: 0, types: {}};
+    if (x.derniere > e.derniere) e.derniere = x.derniere; e.nombre += x.nombre; e.types[x.type] = 1;
+  });
+  var l = Object.keys(m).map(function (k) { return m[k]; }).filter(function (x) {
+    if (t && x.utilisateur.toLowerCase().indexOf(t) < 0) return false;
+    var age = (GEN - dt(x.derniere)) / 86400000;
+    if (ina === 1 && age > 1) return false; if (ina < 0 && age <= -ina) return false;
+    return true;
+  });
+  var k = etatD.tri, s = etatD.sens;
+  l.sort(function (a, b) { var x = a[k], y = b[k]; return x < y ? -s : x > y ? s : 0; });
+  return l;
+}
+function rendreDernieres() {
+  var l = lignesDernieres(), page = l.slice(etatD.page * 50, etatD.page * 50 + 50), jours = (CX.derniere_connexion || []).length ? 90 : 0;
+  $('d-compte').textContent = nf(l.length) + ' utilisateur(s)';
+  $('t-dernieres').innerHTML = entete([['utilisateur', 'Utilisateur'], ['derniere', 'Dernière connexion'], ['age', 'Ancienneté'], ['nombre', 'Programmes (90 j)', 1], ['types', 'Type']], etatD) + '<tbody>' + (page.length ? page.map(function (x) {
+    var age = (GEN - dt(x.derniere)) / 86400000;
+    return '<tr><td><button class="lien" data-u="' + esc(x.utilisateur) + '">' + esc(x.utilisateur) + '</button></td><td class="num">' + dateCourte(x.derniere) + '</td><td>' + etat(age <= 1 ? 'ok' : age <= 7 ? 'faible' : age <= 30 ? 'moyenne' : 'haute', relatif(x.derniere)) + '</td><td class="r num">' + nf(x.nombre) + '</td><td>' + Object.keys(x.types).map(function (t) { return t === 'cron' ? '<span class="badge">cron</span>' : '<span class="badge marque">interactif</span>'; }).join(' ') + '</td></tr>';
+  }).join('') : '<tr><td colspan="5" class="vide">Aucun utilisateur ne correspond</td></tr>') + '</tbody>';
+  $('t-dernieres').querySelectorAll('th[data-k="age"]').forEach(function (th) { th.setAttribute('data-k', 'derniere'); });
+  brancherTri($('t-dernieres'), etatD, rendreDernieres);
+  $('t-dernieres').querySelectorAll('.lien').forEach(function (b) { b.addEventListener('click', function () { filtrerUtilisateur(b.getAttribute('data-u')); }); });
+  pagination($('p-dernieres'), etatD, l.length, rendreDernieres);
+}
+function csv(nom, entetes, lignes) {
+  var c = function (v) { v = String(v == null ? '' : v); if (/^[=+\-@\t\r]/.test(v)) v = "'" + v; return /[";\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  var txt = '﻿' + [entetes].concat(lignes).map(function (l) { return l.map(c).join(';'); }).join('\r\n');
+  var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([txt], {type: 'text/csv;charset=utf-8'})); a.download = nom; document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+function chaleur() {
+  var m = parHeure(), jours = {}, fin = dt(D.meta.genere);
+  for (var j = 6; j >= 0; j--) { var d = new Date(fin.getTime() - j * 86400000); jours[d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')] = d; }
+  var max = 1; Object.keys(jours).forEach(function (k) { for (var h = 0; h < 24; h++) { var v = (m[k + ' ' + String(h).padStart(2, '0') + '|interactif'] || 0) + (m[k + ' ' + String(h).padStart(2, '0') + '|cron'] || 0); if (v > max) max = v; } });
+  var rampe = sombre() ? ['#184f95', '#1c5cab', '#256abf', '#2a78d6', '#3987e5', '#5598e7', '#86b6ef', '#b7d3f6'] : ['#cde2fb', '#9ec5f4', '#6da7ec', '#3987e5', '#2a78d6', '#256abf', '#184f95', '#0d366b'];
+  var vide = css('--surface-2'), nomsJ = ['dim', 'lun', 'mar', 'mer', 'jeu', 'ven', 'sam'];
+  var html = '<div class="carte-chaleur"><span></span>' + Array.apply(null, Array(24)).map(function (_, h) { return '<span class="hh">' + (h % 3 ? '' : h + 'h') + '</span>'; }).join('');
+  Object.keys(jours).forEach(function (k) {
+    html += '<span class="j">' + nomsJ[jours[k].getDay()] + ' ' + k.slice(8) + '</span>';
+    for (var h = 0; h < 24; h++) {
+      var hh = String(h).padStart(2, '0'), a = m[k + ' ' + hh + '|interactif'] || 0, c = m[k + ' ' + hh + '|cron'] || 0, v = a + c;
+      html += '<span class="c" data-i="' + k + '|' + hh + '|' + a + '|' + c + '" style="background:' + (v ? rampe[Math.min(7, Math.floor(v / max * 7.999))] : vide) + '"></span>';
+    }
+  });
+  html += '</div><div class="echelle"><span>0</span><span class="deg" style="background:linear-gradient(90deg,' + rampe.join(',') + ')"></span><span class="num">' + nf(max) + ' programmes / heure</span></div>';
+  $('chaleur').innerHTML = html;
+  $('chaleur').querySelectorAll('.c').forEach(function (c) {
+    c.addEventListener('mousemove', function (ev) { var p = c.getAttribute('data-i').split('|'); montrer('<b>' + p[0].slice(8) + '/' + p[0].slice(5, 7) + ' de ' + p[1] + 'h à ' + String(+p[1] + 1).padStart(2, '0') + 'h</b>' + ligneInfo(css('--s1'), 'Interactif', nf(+p[2])) + ligneInfo(css('--s2'), 'Cron', nf(+p[3])), ev); });
+    c.addEventListener('mouseleave', cacher);
+  });
+}
+function ongletCx(o) {
+  $('cx-onglets').querySelectorAll('button').forEach(function (b) { b.setAttribute('aria-selected', b.getAttribute('data-o') === o ? 'true' : 'false'); });
+  ['journal', 'dernieres', 'classements'].forEach(function (k) { $('cx-' + k).hidden = k !== o; });
+  $('cx-titre').textContent = {journal: 'Journal des connexions', dernieres: 'Dernière connexion par utilisateur', classements: 'Classements'}[o];
+  $('cx-aide').textContent = {journal: 'Un enregistrement par programme lancé (table ' + CX.table + '), ' + CX.fenetre_heures + ' dernières heures' + (CX.tronque ? ' (limité aux plus récents)' : ''),
+    dernieres: 'Dernier programme lancé par chaque utilisateur sur 90 jours : repérer les comptes inactifs', classements: 'Répartition de l\'activité par jour, heure, utilisateur, poste et traitement planifié'}[o];
+  if (o === 'classements' && !rendus.cl) { rendus.cl = true; chaleur();
+    barresH($('cl-util'), compter(CX.detail, 'utilisateur', function (x) { return x.type !== 'cron'; }).slice(0, 10), {lien: filtrerUtilisateur});
+    barresH($('cl-poste'), compter(CX.detail, 'poste', function (x) { return x.type !== 'cron'; }).slice(0, 10));
+    barresH($('cl-cron'), compter(CX.detail, 'programme', function (x) { return x.type === 'cron'; }).slice(0, 10), {coul: '--s2'}); }
+  if (o === 'dernieres') rendreDernieres();
+}
+function rendreConnexions() {
+  if (!CX) { $('v-connexions').innerHTML = '<div class="carte vide">Le journal des connexions IRIUM (table agr_lds) n\'est pas collecté : renseigner BASE dans la configuration du serveur BDD.</div>'; return; }
+  var k = CX.kpi;
+  $('kpis-cx').innerHTML = [kpi('Programmes lancés (24 h)', nf(k.programmes), '', 'pic : ' + nf(k.pic_nombre) + ' à ' + (k.pic_heure || '–'), null),
+    kpi('Interactif', nf(k.interactif), '', nf(k.programmes ? k.interactif / k.programmes * 100 : 0) + ' % de l\'activité', null),
+    kpi('Cron (planifié)', nf(k.cron), '', 'traitements lancés par la planification', null),
+    kpi('Utilisateurs et postes', nf(k.utilisateurs), '', 'sur ' + nf(k.postes) + ' postes · ' + nf(k.en_cours) + ' programme(s) en cours', null)].join('');
+  options($('f-util'), uniques('utilisateur'), 'Tous les utilisateurs');
+  options($('f-prog'), uniques('programme'), 'Tous les programmes');
+  options($('f-poste'), uniques('poste'), 'Tous les postes');
+  ['f-texte', 'f-util', 'f-type', 'f-prog', 'f-poste', 'f-periode', 'f-cours'].forEach(function (i) { $(i).addEventListener(i === 'f-texte' ? 'input' : 'change', function () { etatJ.page = 0; rendreJournal(); }); });
+  $('f-raz').addEventListener('click', function () { ['f-texte', 'f-util', 'f-type', 'f-prog', 'f-poste'].forEach(function (i) { $(i).value = ''; }); $('f-periode').value = '24'; $('f-cours').checked = false; etatJ.page = 0; rendreJournal(); });
+  $('f-csv').addEventListener('click', function () { csv('connexions_irium.csv', ['Début', 'Fin', 'Utilisateur', 'Programme', 'Poste', 'IP', 'Type'], lignesJournal().map(function (x) { return [x.debut, x.fin, x.utilisateur, x.programme, x.poste, x.ip, x.type]; })); });
+  ['d-texte', 'd-type', 'd-inactif'].forEach(function (i) { $(i).addEventListener(i === 'd-texte' ? 'input' : 'change', function () { etatD.page = 0; rendreDernieres(); }); });
+  $('d-csv').addEventListener('click', function () { csv('derniere_connexion.csv', ['Utilisateur', 'Dernière connexion', 'Programmes (90 j)', 'Types'], lignesDernieres().map(function (x) { return [x.utilisateur, x.derniere, x.nombre, Object.keys(x.types).join(' ')]; })); });
+  $('cx-onglets').querySelectorAll('button').forEach(function (b) { b.addEventListener('click', function () { ongletCx(b.getAttribute('data-o')); }); });
+  ongletCx('journal');
+  rendreJournal();
+}
+
+// ------------------------------------------------------------------ tâches planifiées
+function rendreTaches() {
+  var T = D.taches, cats = compter(T, 'categorie');
+  $('kpis-taches').innerHTML = [kpi('Tâches planifiées', nf(T.length), '', 'sur ' + nf(D.serveurs.filter(function (s) { return s.systeme; }).length) + ' serveurs', null)]
+    .concat(cats.slice(0, 3).map(function (c) { return kpi(c.l, nf(c.v), '', nf(T.filter(function (t) { return t.categorie === c.l; }).reduce(function (a, t) { return a + (t.executions_24h || 0); }, 0)) + ' exécutions sur 24 h', null); })).join('');
+  options($('c-srv'), D.serveurs.map(function (s) { return s.nom; }), 'Tous les serveurs');
+  options($('c-cat'), cats.map(function (c) { return c.l; }), 'Toutes les catégories');
+  options($('c-util'), compter(T, 'utilisateur').map(function (c) { return c.l; }), 'Tous les comptes');
+  var rendu = function () {
+    var t = $('c-texte').value.trim().toLowerCase(), s = $('c-srv').value, c = $('c-cat').value, u = $('c-util').value;
+    var l = T.filter(function (x) { return (!s || x.serveur === s) && (!c || x.categorie === c) && (!u || x.utilisateur === u) && (!t || (x.commande + ' ' + x.description).toLowerCase().indexOf(t) >= 0); });
+    $('c-compte').textContent = nf(l.length) + ' tâche(s)';
+    $('t-taches').innerHTML = '<thead><tr><th>Serveur</th><th>Compte</th><th>Planification</th><th>Commande</th><th>Catégorie</th><th class="r">Exécutions 24 h</th><th>Dernière</th></tr></thead><tbody>' +
+      (l.length ? l.map(function (x) { return '<tr><td><b>' + esc(x.serveur) + '</b></td><td>' + esc(x.utilisateur) + '</td><td>' + esc(x.description) + '<br><span class="mono" style="color:var(--ink-3)">' + esc(x.planification) + '</span></td><td class="mono cmd" title="' + esc(x.commande) + '">' + esc(x.commande) + '<br><span style="color:var(--ink-3);font-family:system-ui">' + esc(x.source) + '</span></td><td><span class="badge' + (x.categorie === 'IRIUM' ? ' marque' : '') + '">' + esc(x.categorie) + '</span></td><td class="r num">' + (x.executions_24h == null ? '–' : nf(x.executions_24h)) + '</td><td class="num">' + (x.derniere_execution ? dateCourte(x.derniere_execution) : '–') + '</td></tr>'; }).join('')
+        : '<tr><td colspan="7" class="vide">Aucune tâche</td></tr>') + '</tbody>';
+  };
+  ['c-texte', 'c-srv', 'c-cat', 'c-util'].forEach(function (i) { $(i).addEventListener(i === 'c-texte' ? 'input' : 'change', rendu); });
+  rendu();
+}
+
+// ------------------------------------------------------------------ alertes
+function rendreAlertes() {
+  var g = '', al = D.resume.alertes;
+  $('a-filtres').innerHTML = '<div class="onglets" id="a-ong">' + [['', 'Toutes (' + D.alertes.length + ')']].concat(['critique', 'haute', 'moyenne', 'faible'].map(function (x) { return [x, LIB_ETAT[x] + ' (' + al[x] + ')']; })).map(function (x) { return '<button data-g="' + x[0] + '" aria-selected="' + (x[0] === g) + '">' + esc(x[1]) + '</button>'; }).join('') + '</div><select id="a-srv" aria-label="Serveur"></select>';
+  options($('a-srv'), D.serveurs.map(function (s) { return s.nom; }), 'Tous les serveurs');
+  var rendu = function () {
+    var s = $('a-srv').value, l = D.alertes.filter(function (a) { return (!g || a.gravite === g) && (!s || a.serveur === s); });
+    $('t-alertes').innerHTML = '<thead><tr><th>Gravité</th><th>Serveur</th><th>Domaine</th><th>Constat</th><th class="r">Valeur</th><th class="r">Seuil</th></tr></thead><tbody>' + (l.length ? l.map(function (a) {
+      return '<tr><td>' + etat(a.gravite) + '</td><td><b>' + esc(a.serveur) + '</b></td><td>' + esc(a.domaine) + '</td><td>' + esc(a.message) + '</td><td class="r num">' + (a.valeur == null ? '' : nf(a.valeur, a.valeur % 1 ? 1 : 0)) + '</td><td class="r num">' + (a.seuil == null ? '' : nf(a.seuil)) + '</td></tr>';
+    }).join('') : '<tr><td colspan="6" class="vide">' + etat('ok', 'Aucune alerte') + '</td></tr>') + '</tbody>';
+  };
+  $('a-ong').querySelectorAll('button').forEach(function (b) { b.addEventListener('click', function () { g = b.getAttribute('data-g'); $('a-ong').querySelectorAll('button').forEach(function (x) { x.setAttribute('aria-selected', x === b ? 'true' : 'false'); }); rendu(); }); });
+  $('a-srv').addEventListener('change', rendu);
+  rendu();
+}
+
+// ------------------------------------------------------------------ schéma d'infrastructure
+function schema(cont) {
+  var W = 1120, H = 600, svg = el('svg', {viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': "Schéma de l'infrastructure IRIUM iE"});
+  var apps = parRole('app'), apis = parRole('api'), front = apps.concat(apis), liens = {};
+  (D.schema.liens || []).forEach(function (l) { liens[l.de] = (liens[l.de] || 0) + l.sessions; });
+  var maxS = Math.max.apply(null, Object.keys(liens).map(function (k) { return liens[k]; }).concat([1]));
+  var zone = function (x, y, w, h, t) { svg.appendChild(el('rect', {x: x, y: y, width: w, height: h, rx: 16, 'class': 'zone'})); var tx = el('text', {x: x + 16, y: y + 22, 'class': 'zone-t'}); tx.textContent = t; svg.appendChild(tx); };
+  zone(20, 120, W - 40, 190, 'Couche applicative');
+  zone(20, 360, W - 40, 220, 'Couche données');
+  // utilisateurs
+  var ug = el('g', {});
+  ug.appendChild(el('rect', {x: W / 2 - 190, y: 16, width: 380, height: 64, rx: 14, fill: css('--brand'), stroke: 'none'}));
+  var u1 = el('text', {x: W / 2, y: 43, 'text-anchor': 'middle', 'font-weight': 700, 'font-size': 15, fill: css('--brand-ink')}); u1.textContent = 'Utilisateurs ' + D.meta.client; ug.appendChild(u1);
+  var u2 = el('text', {x: W / 2, y: 63, 'text-anchor': 'middle', 'font-size': 12, fill: css('--brand-ink')});
+  u2.textContent = CX ? nf(CX.kpi.utilisateurs) + ' utilisateurs · ' + nf(CX.kpi.postes) + ' postes sur 24 h' : 'Postes Genero, navigateurs, partenaires'; ug.appendChild(u2);
+  svg.appendChild(ug);
+  var pos = {}, n = front.length, larg = Math.min(220, (W - 80 - (n - 1) * 24) / Math.max(1, n)), x0 = (W - (n * larg + (n - 1) * 24)) / 2;
+  front.forEach(function (s, i) { pos[s.nom] = {x: x0 + i * (larg + 24), y: 165, w: larg, h: 120}; });
+  var bdd = BDD ? BDD.nom : null, repl = REPL ? REPL.nom : null;
+  if (bdd) pos[bdd] = {x: W / 2 - 430, y: 420, w: 300, h: 130};
+  if (repl) pos[repl] = {x: W / 2 + 130, y: 420, w: 300, h: 130};
+  var fl = el('g', {}); svg.appendChild(fl);
+  front.forEach(function (s) {
+    var p = pos[s.nom], cx = p.x + p.w / 2;
+    fl.appendChild(el('path', {d: 'M' + (W / 2) + ',80 C' + (W / 2) + ',120 ' + cx + ',120 ' + cx + ',' + p.y, 'class': 'flux' + (s.statut === 'injoignable' ? ' zero' : '')}));
+    if (bdd) {
+      var b = pos[bdd], v = liens[s.nom] || 0, tx = b.x + b.w / 2 + (cx - W / 2) * 0.25;
+      var path = el('path', {d: 'M' + cx + ',' + (p.y + p.h) + ' C' + cx + ',' + (p.y + p.h + 70) + ' ' + tx + ',' + (b.y - 70) + ' ' + tx + ',' + b.y, 'class': 'flux' + (v ? '' : ' zero')});
+      path.style.strokeWidth = (1.5 + v / maxS * 4).toFixed(1); fl.appendChild(path);
+      if (v) {
+        var lx = (cx + tx) / 2, ly = (p.y + p.h + b.y) / 2, lab = el('g', {'class': 'etiquette'}), t = nf(v) + ' sessions';
+        lab.appendChild(el('rect', {x: lx - t.length * 3.4 - 8, y: ly - 11, width: t.length * 6.8 + 16, height: 22, rx: 11}));
+        var tt = el('text', {x: lx, y: ly + 4, 'text-anchor': 'middle'}); tt.textContent = t; lab.appendChild(tt); svg.appendChild(lab);
+      }
+    }
+  });
+  if (bdd && repl) {
+    var a = pos[bdd], c = pos[repl], rp = REPL.informix && REPL.informix.replication ? REPL.informix.replication.retard_pages : null;
+    fl.appendChild(el('path', {d: 'M' + (a.x + a.w) + ',' + (a.y + a.h / 2) + ' L' + c.x + ',' + (c.y + c.h / 2), 'class': 'flux repl'}));
+    var lab = el('g', {'class': 'etiquette'}), t = 'Réplication RSS' + (rp != null ? ' · retard ' + nf(rp) + ' pages' : '');
+    var mx = (a.x + a.w + c.x) / 2, my = a.y + a.h / 2 - 22;
+    lab.appendChild(el('rect', {x: mx - t.length * 3.3 - 8, y: my - 11, width: t.length * 6.6 + 16, height: 22, rx: 11}));
+    var tt = el('text', {x: mx, y: my + 4, 'text-anchor': 'middle'}); tt.textContent = t; lab.appendChild(tt); svg.appendChild(lab);
+  }
+  Object.keys(pos).forEach(function (nom) {
+    var s = srv(nom), p = pos[nom], sy = s.systeme || {}, g = el('g', {'class': 'noeud ' + s.statut, tabindex: 0, role: 'button', 'aria-label': nom + ' : ' + LIB_ETAT[s.statut]});
+    g.appendChild(el('rect', {x: p.x, y: p.y, width: p.w, height: p.h, rx: 14, 'class': 'fond'}));
+    g.appendChild(el('rect', {x: p.x, y: p.y, width: 6, height: p.h, rx: 3, fill: css(s.statut === 'ok' ? '--good' : s.statut === 'attention' ? '--serious' : '--crit')}));
+    var ico = el('g', {transform: 'translate(' + (p.x + 16) + ',' + (p.y + 14) + ')'});
+    ico.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="' + css('--ink-2') + '" stroke-width="1.8" stroke-linecap="round">' + (s.role === 'bdd' || s.role === 'repl' ? ICONES.base : ICONES.serveurs) + '</svg>';
+    g.appendChild(ico);
+    var t1 = el('text', {x: p.x + 46, y: p.y + 31, 'font-weight': 700, 'font-size': 16}); t1.textContent = nom; g.appendChild(t1);
+    var et = el('g', {transform: 'translate(' + (p.x + p.w - 14) + ',' + (p.y + 24) + ')'});
+    et.innerHTML = '<svg x="-14" y="-7" width="14" height="14" viewBox="0 0 16 16" fill="' + css(s.statut === 'ok' ? '--good' : s.statut === 'attention' ? '--serious' : '--crit') + '">' + FORMES[s.statut] + '</svg>';
+    g.appendChild(et);
+    var t2 = el('text', {x: p.x + 18, y: p.y + 54, 'class': 't2'}); t2.textContent = (LIB_ROLE[s.role] || s.role) + ' · ' + s.hote; g.appendChild(t2);
+    var lignes = [];
+    if (s.systeme) lignes.push('CPU ' + nf(sy.cpu_pct) + ' %  ·  RAM ' + nf((sy.memoire || {}).pct) + ' %  ·  ' + nf(sy.ncpu) + ' vCPU');
+    if ((s.role === 'bdd' || s.role === 'repl') && s.informix && s.informix.entete) lignes.push('Informix ' + s.informix.entete.version + ' · ' + s.informix.entete.mode);
+    if ((s.role === 'bdd' || s.role === 'repl') && s.informix) lignes.push(nf(s.informix.sessions) + ' sessions · cache ' + nf(s.informix.cache_pct, 1) + ' %');
+    if (s.role === 'app' || s.role === 'api') { var f = (sy.processus || {}).fglrun; lignes.push((f ? nf(f.nombre) + ' processus fglrun' : 'fglrun : –') + ((s.api || []).length ? ' · API ' + nf(Math.max.apply(null, s.api.map(function (a) { return a.ms; }))) + ' ms' : '')); }
+    if (!s.systeme) lignes.push('Aucune donnée reçue');
+    lignes.push(LIB_ETAT[s.statut] + (s.alertes ? ' · ' + s.alertes + ' alerte(s)' : ''));
+    lignes.forEach(function (l, i) { var t = el('text', {x: p.x + 18, y: p.y + 76 + i * 17, 'class': 't3'}); t.textContent = l; g.appendChild(t); });
+    var ouvrir = function () { aller('serveurs', 'srv-' + nom); };
+    g.addEventListener('click', ouvrir); g.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ouvrir(); } });
+    g.addEventListener('mousemove', function (ev) { montrer('<b>' + esc(nom) + ' · ' + esc(LIB_ETAT[s.statut]) + '</b>' + ligneInfo('', 'Score', s.score + '/100') + ligneInfo('', 'Dernière collecte', relatif(s.horodatage)) + ligneInfo('', 'Tâches planifiées', nf(s.taches)), ev); });
+    g.addEventListener('mouseleave', cacher);
+    svg.appendChild(g);
+  });
+  cont.innerHTML = ''; cont.appendChild(svg);
+}
+function rendreSchema() {
+  schema($('schema-complet'));
+  var noms = {}; D.serveurs.forEach(function (s) { noms[s.nom] = 1; });
+  barresH($('schema-liens'), (D.schema.liens || []).map(function (l) { return {l: l.de === l.vers ? l.de + ' (sessions locales)' : l.de + ' → ' + l.vers, v: l.sessions}; }));
+  $('schema-legende').innerHTML = '<div style="display:flex;flex-direction:column;gap:10px;font-size:13px">' +
+    ['ok', 'attention', 'critique', 'injoignable'].map(function (e) { return '<div>' + etat(e) + ' <span style="color:var(--ink-2)">' + {ok: 'aucune alerte haute ni critique', attention: 'au moins une alerte haute', critique: 'au moins une alerte critique', injoignable: 'collecte absente ou périmée (plus de ' + D.meta.seuils.FRAICHEUR_MAX_MIN + ' min)'}[e] + '</span></div>'; }).join('') +
+    '<div style="color:var(--ink-2)">Flux en pointillés animés : connexions actives. Épaisseur proportionnelle au nombre de sessions Informix. Le flux bleu représente la réplication vers le secondaire RSS.</div>' +
+    '<div style="color:var(--ink-2)">Collecte toutes les ' + D.meta.frequence_min + ' minutes par cron, en lecture seule, sur chaque serveur.</div></div>';
+}
+
+var RENDU = {accueil: rendreAccueil, serveurs: rendreServeurs, base: rendreBase, connexions: rendreConnexions, taches: rendreTaches, alertes: rendreAlertes, schema: rendreSchema};
+
+// ------------------------------------------------------------------ recherche globale
+function rechercher(q) {
+  q = q.trim().toLowerCase();
+  var res = [];
+  if (q.length < 2) return res;
+  D.serveurs.forEach(function (s) { if ((s.nom + ' ' + s.hote + ' ' + s.role).toLowerCase().indexOf(q) >= 0) res.push({g: 'Serveurs', l: s.nom + ' · ' + s.hote, s: LIB_ETAT[s.statut], f: function () { aller('serveurs', 'srv-' + s.nom); }}); });
+  if (CX) {
+    var vus = {};
+    (CX.derniere_connexion || []).forEach(function (x) { if (!vus[x.utilisateur] && x.utilisateur.toLowerCase().indexOf(q) >= 0) { vus[x.utilisateur] = 1; res.push({g: 'Utilisateurs', l: x.utilisateur, s: 'dernière connexion ' + relatif(x.derniere), f: function () { filtrerUtilisateur(x.utilisateur); }}); } });
+    uniques('programme').filter(function (p) { return p.toLowerCase().indexOf(q) >= 0; }).slice(0, 6).forEach(function (p) { res.push({g: 'Programmes', l: p, s: '', f: function () { aller('connexions'); ongletCx('journal'); $('f-prog').value = p; etatJ.page = 0; rendreJournal(); }}); });
+    uniques('poste').filter(function (p) { return p.toLowerCase().indexOf(q) >= 0; }).slice(0, 6).forEach(function (p) { res.push({g: 'Postes', l: p, s: '', f: function () { aller('connexions'); ongletCx('journal'); $('f-poste').value = p; etatJ.page = 0; rendreJournal(); }}); });
+  }
+  D.taches.filter(function (t) { return t.commande.toLowerCase().indexOf(q) >= 0; }).slice(0, 6).forEach(function (t) { res.push({g: 'Tâches planifiées', l: t.commande, s: t.serveur, f: function () { aller('taches'); $('c-texte').value = q; $('c-texte').dispatchEvent(new Event('input')); }}); });
+  D.alertes.filter(function (a) { return a.message.toLowerCase().indexOf(q) >= 0; }).slice(0, 4).forEach(function (a) { res.push({g: 'Alertes', l: a.message, s: a.serveur, f: function () { aller('alertes'); }}); });
+  return res.slice(0, 40);
+}
+var choixR = [], idxR = -1;
+function afficherR() {
+  var box = $('resultats'), html = '', g = '';
+  if (!choixR.length) { box.innerHTML = $('q').value.trim().length >= 2 ? '<div class="vide">Aucun résultat</div>' : ''; box.classList.toggle('ouvert', $('q').value.trim().length >= 2); return; }
+  choixR.forEach(function (r, i) { if (r.g !== g) { g = r.g; html += '<div class="grp">' + esc(g) + '</div>'; } html += '<button role="option" data-i="' + i + '" class="' + (i === idxR ? 'actif' : '') + '"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(r.l) + '</span><small>' + esc(r.s) + '</small></button>'; });
+  box.innerHTML = html; box.classList.add('ouvert');
+  box.querySelectorAll('button').forEach(function (b) { b.addEventListener('mousedown', function (ev) { ev.preventDefault(); choisirR(+b.getAttribute('data-i')); }); });
+}
+function choisirR(i) { var r = choixR[i]; if (!r) return; $('resultats').classList.remove('ouvert'); $('q').blur(); r.f(); }
+$('q').addEventListener('input', function () { choixR = rechercher(this.value); idxR = choixR.length ? 0 : -1; afficherR(); });
+$('q').addEventListener('keydown', function (ev) {
+  if (ev.key === 'ArrowDown') { idxR = Math.min(choixR.length - 1, idxR + 1); afficherR(); ev.preventDefault(); }
+  else if (ev.key === 'ArrowUp') { idxR = Math.max(0, idxR - 1); afficherR(); ev.preventDefault(); }
+  else if (ev.key === 'Enter') { choisirR(idxR); ev.preventDefault(); }
+  else if (ev.key === 'Escape') { $('resultats').classList.remove('ouvert'); this.blur(); }
+});
+$('q').addEventListener('blur', function () { setTimeout(function () { $('resultats').classList.remove('ouvert'); }, 120); });
+document.addEventListener('keydown', function (ev) { if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'k') { ev.preventDefault(); $('q').focus(); $('q').select(); } });
+
+// ------------------------------------------------------------------ thème, rafraîchissement, démarrage
+function lireTheme() { try { return localStorage.getItem('portail-theme'); } catch (e) { return null; } }
+function poserTheme(t) { if (t) document.documentElement.setAttribute('data-theme', t); else document.documentElement.removeAttribute('data-theme'); try { if (t) localStorage.setItem('portail-theme', t); } catch (e) {} }
+poserTheme(lireTheme());
+$('theme').addEventListener('click', function () { poserTheme(sombre() ? 'light' : 'dark'); rendus = {}; var v = vueActive; RENDU[v](); rendus[v] = true; if (v === 'connexions' && !$('cx-classements').hidden) { rendus.cl = false; ongletCx('classements'); } });
+var minuterie;
+window.addEventListener('resize', function () { clearTimeout(minuterie); minuterie = setTimeout(function () { rendus = {}; rendus[vueActive] = true; if (vueActive !== 'connexions') RENDU[vueActive](); }, 250); });
+// la page est régénérée à chaque collecte : rechargement automatique toutes les 5 minutes (vue conservée)
+setInterval(function () { if (document.visibilityState === 'visible' && !document.activeElement.matches('input,select')) location.reload(); }, 300000);
+
+$('bandeau-demo').hidden = !D.meta.demo;
+$('sous-titre').textContent = D.meta.titre + ' · données du ' + dateCourte(D.meta.genere) + ' · collecte toutes les ' + D.meta.frequence_min + ' min';
+$('pied-gen').textContent = 'Généré le ' + dateCourte(D.meta.genere) + ' · v' + D.meta.version;
+$('etat-global').innerHTML = etat(D.resume.statut, D.resume.statut === 'ok' ? 'Infrastructure opérationnelle' : D.resume.statut === 'critique' ? D.resume.alertes.critique + ' alerte(s) critique(s)' : D.resume.alertes.haute + ' alerte(s) haute(s)');
+construireNav();
+aller(location.hash.slice(1) || 'accueil');
+})();
+</script>
+</body>
+</html>

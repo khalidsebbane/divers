@@ -1,0 +1,65 @@
+# =============================================================================================
+# Portail d'infrastructure IRIUM iE — Tractafric
+# Fichier unique, partagé par tous les serveurs (copier en tractafric.conf à côté de ce fichier).
+# Format shell : CLE=valeur (lu par collecte.sh et par les scripts Python).
+# =============================================================================================
+
+# --- Stockage : dossier commun (NFS) visible de tous les serveurs. Jamais /var ni /tmp.
+PARTAGE=/msdos/ks/tractafric
+
+# --- Serveurs de l'infrastructure : NOM:nom_d_hote:role   (rôles : bdd, repl, app, api)
+SERVEURS="BDD:srv-bdd01:bdd REPL:srv-bdd02:repl APP1:srv-app01:app APP2:srv-app02:app APP3:srv-app03:app API:srv-api01:api"
+
+# Serveur qui génère le portail après sa propre collecte (et l'héberge sous httpd)
+GENERATEUR=API
+
+# --- Fréquence (minutes, utilisée par installer-cron.sh) et conservation de l'historique
+FREQUENCE_MIN=15
+CONSERVATION_JOURS=7
+
+# --- Informix (serveurs bdd et repl)
+INFORMIXDIR=/opt/IBM/informix
+INFORMIXSERVER=ol_tractafric
+ONCONFIG=onconfig.ol_tractafric
+INFORMIXSQLHOSTS=/opt/IBM/informix/etc/sqlhosts
+# Profil à charger à la place (facultatif) : PROFIL_INFORMIX=/home/informix/.bash_profile
+PROFIL_INFORMIX=
+DELAI_SQL=120
+ENCODAGE_BASE=latin-1
+
+# --- Connexions IRIUM : journal des programmes lancés (un enregistrement par lancement)
+BASE=magix_prod
+TABLE_CONNEXIONS=agr_lds
+# Colonnes détectées automatiquement ; à forcer si besoin :
+# COLONNE_DATE=alds_open  COLONNE_FIN=alds_close  COLONNE_UTILISATEUR=...  COLONNE_PROGRAMME=...  COLONNE_POSTE=...  COLONNE_COMPLEMENT=alds_complement
+# Classement « cron » : complément correspondant à ces motifs (MATCHES Informix), comptes ou postes de planification
+MOTIFS_CRON="Xp_cron*"
+COMPTES_CRON=
+POSTES_CRON=
+CONNEXIONS_HEURES=24
+CONNEXIONS_MAX=20000
+CONNEXIONS_JOURS_TENDANCE=7
+DERNIERE_CONNEXION_JOURS=90
+
+# --- Processus et services suivis sur chaque serveur
+MOTIFS_PROCESSUS="fglrun|ipscrond|oninit|httpd|java|digital_dealer"
+SERVICES="crond sshd httpd"
+COMPTES_CRONTAB="root informix irium"
+
+# --- API : URL testées depuis le serveur API (code HTTP et temps de réponse)
+URLS_API="https://srv-api01.tractafric.local/api/sante"
+VERIFIER_CERTIFICAT_API=oui
+
+# --- Seuils d'alerte du portail
+SEUIL_CPU=85
+SEUIL_MEMOIRE=90
+SEUIL_DISQUE=85
+SEUIL_DBSPACE_LIBRE=10
+SEUIL_CHECKPOINT_S=5
+SEUIL_API_MS=2000
+SEUIL_RETARD_RSS=1000
+FRAICHEUR_MAX_MIN=45
+
+# --- Présentation
+CLIENT="Tractafric Equipment"
+TITRE="Portail d'infrastructure IRIUM iE"
