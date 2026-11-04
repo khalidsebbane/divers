@@ -408,14 +408,47 @@ def parse_rss(texte):
     return {'champs': info, 'retard_pages': int(m.group(1)) if m else None, 'serveurs': serveurs}
 
 
+def compte_informix(conf):
+    """Compte sous lequel lancer onstat et dbaccess quand le collecteur tourne en root (défaut : informix)."""
+    compte = conf.get('COMPTE_INFORMIX', 'informix').strip()
+    if not compte or not hasattr(os, 'geteuid') or os.geteuid() != 0 or compte == 'root':
+        return None
+    try:
+        import pwd
+        return pwd.getpwnam(compte)
+    except (ImportError, KeyError):
+        return None
+
+
+def ifx(conf, cmd, delai=30, entree=None):
+    """Commande Informix (onstat, dbaccess) exécutée sous le compte informix, environnement conservé."""
+    c = compte_informix(conf)
+    if c is not None and existe('runuser'):
+        cmd = ['runuser', '-u', c.pw_name, '--'] + list(cmd)
+    return lancer(cmd, delai, entree)
+
+
+def dossier_unload(conf, travail):
+    """Dossier où dbaccess écrit ses fichiers unload : appartient au compte informix s'il est utilisé."""
+    c = compte_informix(conf)
+    if c is None:
+        return travail
+    d = os.path.join(travail, c.pw_name)
+    if not os.path.isdir(d):
+        os.makedirs(d)
+    os.chown(d, c.pw_uid, c.pw_gid)
+    os.chmod(d, 0o700)
+    return d
+
+
 def dbaccess(conf, base, requete, travail):
     """SELECT en lecture seule via dbaccess, résultat au format unload. Retourne une liste de listes."""
-    chemin = os.path.join(travail, 'requete_%d.unl' % os.getpid())
+    chemin = os.path.join(dossier_unload(conf, travail), 'requete_%d_%d.unl' % (os.getpid(), int(time.time() * 1000) % 100000))
     if os.path.exists(chemin):
         os.unlink(chemin)
     sql = ("SET ISOLATION TO DIRTY READ;\nSET LOCK MODE TO WAIT 5;\nUNLOAD TO '%s' DELIMITER '|' %s;\n"
            % (chemin, requete.strip().rstrip(';')))
-    code, out = lancer(['dbaccess', base, '-'], int(conf.get('DELAI_SQL', '120')), sql)
+    code, out = ifx(conf, ['dbaccess', base, '-'], int(conf.get('DELAI_SQL', '120')), sql)
     if code != 0 or not os.path.exists(chemin):
         raise RuntimeError('dbaccess %s : %s' % (base, out.strip()[-300:]))
     try:
@@ -443,23 +476,23 @@ def collecter_informix(conf, travail, erreurs):
     env_informix(conf)
     if not existe('onstat'):
         return None
-    _, out = lancer(['onstat', '-'], 30)
+    _, out = ifx(conf, ['onstat', '-'], 30)
     ifx = {'entete': parse_onstat_entete(out)}
     if not ifx['entete']:
         ifx['etat'] = 'arrete'
         ifx['message'] = out.strip()[-200:]
         return ifx
     ifx['etat'] = 'actif'
-    _, out = lancer(['onstat', '-p'], 30)
+    _, out = ifx(conf, ['onstat', '-p'], 30)
     p = parse_profil(out)
     ifx['profil'] = dict((k, p.get(k)) for k in ('dskreads', 'pagreads', 'bufreads', 'dskwrits', 'bufwrits', 'isamtot',
                                                   'lockreqs', 'lockwts', 'deadlks', 'ckpwaits', 'seqscans', 'bufwaits'))
     ifx['cache_pct'] = ratio_cache(p)
-    _, out = lancer(['onstat', '-g', 'ckp'], 30)
+    _, out = ifx(conf, ['onstat', '-g', 'ckp'], 30)
     ifx['checkpoints'] = parse_checkpoints(out)[-20:]
-    _, out = lancer(['onstat', '-l'], 30)
+    _, out = ifx(conf, ['onstat', '-l'], 30)
     ifx['logs'] = parse_logs(out)
-    _, out = lancer(['onstat', '-g', 'rss', 'verbose'], 30)
+    _, out = ifx(conf, ['onstat', '-g', 'rss', 'verbose'], 30)
     ifx['replication'] = parse_rss(out)
     if not existe('dbaccess') or conf.get('SQL', 'oui') == 'non':
         return ifx

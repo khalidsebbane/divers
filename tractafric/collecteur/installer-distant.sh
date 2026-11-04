@@ -1,14 +1,17 @@
 #!/bin/bash
 # Exécuté en root sur chaque serveur interrogé (déposé et lancé par deployer-ssh.sh depuis le serveur central).
 # Installe le collecteur dans /opt/portail-infra et autorise la clé du serveur central à lancer UNIQUEMENT le collecteur.
-#   installer-distant.sh --nom APP1 --role app --cle "ssh-ed25519 AAAA... portail-infra" --depuis 10.0.1.12 [--compte root]
+#   installer-distant.sh --nom APP1 --role app --cle "ssh-ed25519 AAAA... portail-infra" --depuis 10.0.1.12 [--compte informix] [--sans-sudo]
+# Avec un compte autre que root, une règle sudo l'autorise à lancer le collecteur (et rien d'autre) en root : lecture des
+# crontabs et de /var/log/cron. Les commandes Informix sont, elles, relancées sous le compte informix.
+# --sans-sudo : le collecteur tourne directement sous le compte (sans règle sudo ; crontabs des autres comptes non lues).
 #   installer-distant.sh --desinstaller [--compte root]
 set -eu
-NOM="" ROLE="" CLE="" DEPUIS="" COMPTE=root RETIRER=0 DEPOT="$(cd "$(dirname "$0")" && pwd)"
+NOM="" ROLE="" CLE="" DEPUIS="" COMPTE=root RETIRER=0 SANS_SUDO=0 DEPOT="$(cd "$(dirname "$0")" && pwd)"
 while [ $# -gt 0 ]; do
   case "$1" in
     --nom) NOM="$2"; shift 2 ;; --role) ROLE="$2"; shift 2 ;; --cle) CLE="$2"; shift 2 ;;
-    --depuis) DEPUIS="$2"; shift 2 ;; --compte) COMPTE="$2"; shift 2 ;; --desinstaller) RETIRER=1; shift ;;
+    --depuis) DEPUIS="$2"; shift 2 ;; --compte) COMPTE="$2"; shift 2 ;; --desinstaller) RETIRER=1; shift ;; --sans-sudo) SANS_SUDO=1; shift ;;
     *) echo "option inconnue : $1" >&2; exit 2 ;;
   esac
 done
@@ -32,12 +35,16 @@ PY=""
 for p in /usr/libexec/platform-python /usr/bin/python3 /usr/bin/python2.7 /usr/bin/python; do [ -x "$p" ] && { PY="$p"; break; }; done
 [ -n "$PY" ] || { echo "aucun Python trouvé" >&2; exit 1; }
 
-install -d -o root -g root -m 700 "$DOSSIER" "$DOSSIER/collecteur" "$DOSSIER/collecteur/travail"
-install -o root -g root -m 600 "$DEPOT/collecte_infra.py" "$DOSSIER/collecteur/collecte_infra.py"
-install -o root -g root -m 600 "$DEPOT/tractafric.conf" "$DOSSIER/tractafric.conf"
+PROPRIO=root; [ "$SANS_SUDO" -eq 1 ] && PROPRIO="$COMPTE"
+# 711 : le compte informix traverse les dossiers pour écrire ses fichiers unload dans travail/informix
+install -d -o root -g root -m 711 "$DOSSIER" "$DOSSIER/collecteur"
+install -d -o "$PROPRIO" -m 711 "$DOSSIER/collecteur/travail"
+install -o "$PROPRIO" -m 600 "$DEPOT/collecte_infra.py" "$DOSSIER/collecteur/collecte_infra.py"
+install -o "$PROPRIO" -m 600 "$DEPOT/tractafric.conf" "$DOSSIER/tractafric.conf"
 CMD="$PY $DOSSIER/collecteur/collecte_infra.py --stdout --nom $NOM --role $ROLE"
 FORCEE="$CMD"
-if [ "$COMPTE" != root ]; then
+rm -f /etc/sudoers.d/portail-infra
+if [ "$COMPTE" != root ] && [ "$SANS_SUDO" -eq 0 ]; then
   printf '%s ALL=(root) NOPASSWD: %s\n' "$COMPTE" "$CMD" > /etc/sudoers.d/portail-infra.tmp
   chmod 440 /etc/sudoers.d/portail-infra.tmp
   visudo -cf /etc/sudoers.d/portail-infra.tmp >/dev/null && mv -f /etc/sudoers.d/portail-infra.tmp /etc/sudoers.d/portail-infra
@@ -51,7 +58,7 @@ command -v restorecon >/dev/null 2>&1 && restorecon -R "$MAISON/.ssh" 2>/dev/nul
 [ "$(basename "$DEPOT")" = portail-infra-depot ] && rm -rf "$DEPOT"
 
 # Contrôle : une collecte locale doit produire un instantané
-TAILLE="$($CMD 2>/dev/null | wc -c)"
+if [ "$PROPRIO" = root ]; then TAILLE="$($CMD 2>/dev/null | wc -c)"; else TAILLE="$(runuser -u "$COMPTE" -- $CMD 2>/dev/null | wc -c)"; fi
 echo "$(hostname -s) ($NOM, $ROLE) : collecteur installé, Python $PY, instantané de test : $TAILLE octets"
 if [ "$COMPTE" = root ] && command -v sshd >/dev/null 2>&1; then
   PRL="$(sshd -T 2>/dev/null | awk '$1=="permitrootlogin"{print $2}')"

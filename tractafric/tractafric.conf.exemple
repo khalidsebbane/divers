@@ -19,12 +19,17 @@ PARTAGE=/msdos/ks/tractafric
 SERVEURS="BDD:srv-bdd01:bdd:10.0.1.11 REPL:srv-bdd02:repl:10.0.1.12 APP1:srv-app01:app:10.0.1.21 APP2:srv-app02:app:10.0.1.22 APP3:srv-app03:app:10.0.1.23 API:srv-api01:api:10.0.1.30"
 
 # --- SSH (mode central)
-# ADMIN : compte de connexion pour le déploiement (une fois) ; ELEVATION : su (mot de passe root) ou sudo
-# COMPTE_SSH : compte utilisé ensuite par la collecte automatique. S'il n'est pas root, le déploiement crée une
-#              règle sudo qui ne l'autorise qu'à lancer le collecteur (/etc/sudoers.d/portail-infra).
+# ADMIN       : compte de connexion pour le déploiement (une seule fois) ; ELEVATION : su (mot de passe root) ou sudo
+# COMPTE_SSH  : compte utilisé ensuite par la collecte automatique, avec la clé du portail
+# SUDO_COLLECTE=oui : règle sudo limitée au collecteur (lecture des crontabs et de /var/log/cron) ;
+#               non : le collecteur tourne sous COMPTE_SSH sans sudo (seule sa propre crontab est lue)
+# Compte propre à un serveur (ex. si informix n'existe pas sur un serveur d'applications) : COMPTE_SSH_APP1=irium, ADMIN_APP1=irium
 ADMIN=root
 ELEVATION=su
 COMPTE_SSH=root
+SUDO_COLLECTE=oui
+# Compte sous lequel le collecteur lance onstat et dbaccess (droits DBSA, aucun GRANT nécessaire)
+COMPTE_INFORMIX=informix
 CLE_SSH=/root/.ssh/portail_infra
 PORT_SSH=22
 DELAI_SSH=300

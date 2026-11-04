@@ -20,12 +20,13 @@ import threading
 
 ICI = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ICI)
-from collecte_infra import (adresses_locales, ajouter_historique, ecrire_json, identifier, instantane, lancer,  # noqa: E402
-                            lire_conf, resume, serveurs_conf)
+from collecte_infra import (adresses_locales, ajouter_historique, conf_serveur, ecrire_json, identifier, instantane,  # noqa: E402
+                            lancer, lire_conf, resume, serveurs_conf)
 
 
 def commande_ssh(srv, conf):
     """Commande SSH vers un serveur distant. La commande réellement exécutée est imposée par authorized_keys."""
+    conf = conf_serveur(conf, srv['nom'])  # COMPTE_SSH_APP1=... l'emporte sur COMPTE_SSH
     cle = conf.get('CLE_SSH', '/root/.ssh/portail_infra')
     compte = conf.get('COMPTE_SSH', 'root')
     return ['ssh', '-i', cle, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=%s' % conf.get('DELAI_CONNEXION_SSH', '10'),

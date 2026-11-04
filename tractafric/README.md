@@ -106,11 +106,12 @@ cp tractafric.conf.exemple tractafric.conf && vi tractafric.conf
 Le déploiement affiche l'empreinte SSH de chaque serveur, à comparer, puis termine par un bilan `OK` ou `ÉCHEC` par serveur.
 
 Points à vérifier :
-- **Root sans connexion SSH** :
-  - `ADMIN=irium` et `ELEVATION=su` : connexion en `irium`, puis passage en root par `su -`. Un seul mot de passe par serveur grâce à la connexion SSH partagée ;
-  - `COMPTE_SSH=irium` : la collecte se connecte en `irium`. Le déploiement crée `/etc/sudoers.d/portail-infra`, qui n'autorise `irium` qu'à lancer le collecteur en root, sans mot de passe ;
-  - autre solution : garder `COMPTE_SSH=root` avec `PermitRootLogin forced-commands-only`.
-- **Droits sur la base** : le collecteur interroge Informix en root. Si `magix_prod` n'accorde pas CONNECT à public, lancer en informix : `echo "GRANT CONNECT TO root;" | dbaccess magix_prod`.
+- **Comptes** :
+  - `ADMIN=informix` et `ELEVATION=su` : le déploiement se connecte en `informix`, puis passe root par `su -`. Un seul mot de passe par serveur grâce à la connexion SSH partagée ;
+  - `COMPTE_SSH=informix` : la collecte se connecte en `informix`. Le déploiement crée `/etc/sudoers.d/portail-infra`, qui n'autorise ce compte qu'à lancer le collecteur, pour lire les crontabs et `/var/log/cron` ;
+  - toutes les commandes Informix (`onstat`, `dbaccess`) sont exécutées sous `COMPTE_INFORMIX=informix`, avec les droits DBSA : aucun GRANT n'est nécessaire ;
+  - sans sudo : `SUDO_COLLECTE=non`. Seule la crontab du compte est alors lue ;
+  - compte propre à un serveur : `COMPTE_SSH_APP1=irium`, `ADMIN_APP1=irium`.
 - **Ajouter un serveur ou mettre à jour le collecteur** : `./collecteur/deployer-ssh.sh APP3`.
 - **Tout retirer** : `./collecteur/deployer-ssh.sh --desinstaller`, puis `./collecteur/installer-cron.sh --retirer`.
 

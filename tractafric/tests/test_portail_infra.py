@@ -251,3 +251,26 @@ def test_sortie_standard_ascii():
     finally:
         shutil.rmtree(d)
         shutil.rmtree(os.path.join(RACINE, 'collecteur', 'travail'), ignore_errors=True)
+
+
+def test_commandes_informix_sous_compte_informix(monkeypatch):
+    import pwd
+    appels = []
+    monkeypatch.setattr(c, 'lancer', lambda cmd, delai=60, entree=None: (appels.append(cmd), (0, ''))[1])
+    monkeypatch.setattr(c, 'existe', lambda x: True)
+    monkeypatch.setattr(os, 'geteuid', lambda: 0)
+    compte = pwd.getpwuid(65534).pw_name if any(p.pw_uid == 65534 for p in pwd.getpwall()) else pwd.getpwuid(os.getuid()).pw_name
+    c.ifx({'COMPTE_INFORMIX': compte}, ['onstat', '-'])
+    assert appels[-1] == ['runuser', '-u', compte, '--', 'onstat', '-']
+    c.ifx({'COMPTE_INFORMIX': 'compte_absent_xyz'}, ['onstat', '-'])
+    assert appels[-1] == ['onstat', '-']                                   # compte absent : commande directe
+    monkeypatch.setattr(os, 'geteuid', lambda: 1000)
+    c.ifx({'COMPTE_INFORMIX': compte}, ['onstat', '-'])
+    assert appels[-1] == ['onstat', '-']                                   # déjà sous un compte non root
+
+
+def test_compte_ssh_propre_a_un_serveur():
+    conf = dict(CONF_CENTRAL, COMPTE_SSH='informix', COMPTE_SSH_APP1='irium')
+    s = dict((x['nom'], x) for x in c.serveurs_conf(conf))
+    assert cc.commande_ssh(s['APP1'], conf)[-2] == 'irium@10.0.1.21'
+    assert cc.commande_ssh(s['BDD'], conf)[-2] == 'informix@10.0.1.11'

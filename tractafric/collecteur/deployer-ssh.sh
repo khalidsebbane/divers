@@ -13,7 +13,7 @@ ICI="$(cd "$(dirname "$0")" && pwd)"; RACINE="$(dirname "$ICI")"; CONF="$RACINE/
 . "$CONF"
 RETIRER=0; [ "${1:-}" = "--desinstaller" ] && { RETIRER=1; shift; }
 CIBLES=" $* "
-ADMIN="${ADMIN:-root}"; ELEVATION="${ELEVATION:-su}"; COMPTE="${COMPTE_SSH:-root}"; CLE="${CLE_SSH:-/root/.ssh/portail_infra}"; PORT="${PORT_SSH:-22}"
+ADMIN_DEFAUT="${ADMIN:-root}"; ELEVATION_DEFAUT="${ELEVATION:-su}"; CLE="${CLE_SSH:-/root/.ssh/portail_infra}"; PORT="${PORT_SSH:-22}"
 [ "${MODE:-}" = central ] || { echo "MODE=central attendu dans $CONF" >&2; exit 1; }
 [ -n "${CENTRAL:-}" ] || { echo "CENTRAL (nom du serveur central, ex. REPL) attendu dans $CONF" >&2; exit 1; }
 IP_CENTRAL=""
@@ -41,8 +41,13 @@ for s in $SERVEURS; do
   IFS=: read -r NOM HOTE ROLE IP <<< "$s"
   [ "$NOM" = "$CENTRAL" ] && continue
   [ "$CIBLES" = "  " ] || [[ "$CIBLES" == *" $NOM "* ]] || continue
-  ssh -O exit "${SSHOPTS[@]}" "$ADMIN@${IP:-$HOTE}" 2>/dev/null || true
   CIBLE="${IP:-$HOTE}"
+  # Valeurs propres au serveur : COMPTE_SSH_APP1=irium, ADMIN_APP1=..., ELEVATION_APP1=... l'emportent
+  v="COMPTE_SSH_$NOM"; COMPTE="${!v:-${COMPTE_SSH:-root}}"
+  v="ADMIN_$NOM"; ADMIN="${!v:-${ADMIN_DEFAUT}}"
+  v="ELEVATION_$NOM"; ELEVATION="${!v:-${ELEVATION_DEFAUT}}"
+  OPT_SUDO=""; [ "${SUDO_COLLECTE:-oui}" = non ] && OPT_SUDO="--sans-sudo"
+  ssh -O exit "${SSHOPTS[@]}" "$ADMIN@$CIBLE" 2>/dev/null || true
   echo; echo "=== $NOM ($ROLE) : $CIBLE"
   if ! ssh-keygen -F "$CIBLE" -f "$KH" >/dev/null 2>&1 && ! ssh-keygen -F "[$CIBLE]:$PORT" -f "$KH" >/dev/null 2>&1; then
     ssh-keyscan -p "$PORT" -t ed25519,ecdsa,rsa "$CIBLE" 2>/dev/null > "$KH.nouveau" || true
@@ -62,7 +67,7 @@ for s in $SERVEURS; do
   # Dépôt temporaire dans le dossier personnel du compte d'administration (ni /tmp ni /var), puis installation en root
   if MAISON="$(ssh "${SSHOPTS[@]}" "$ADMIN@$CIBLE" "umask 077; rm -rf ~/$DEPOT && mkdir ~/$DEPOT && echo \$HOME")" && \
      scp "${SCPOPTS[@]}" "$ICI/collecte_infra.py" "$ICI/installer-distant.sh" "$CONF" "$ADMIN@$CIBLE:$DEPOT/" && \
-     en_root "$CIBLE" "bash $MAISON/$DEPOT/installer-distant.sh --nom $NOM --role $ROLE --depuis $IP_CENTRAL --compte $COMPTE --cle '$PUB'"; then
+     en_root "$CIBLE" "bash $MAISON/$DEPOT/installer-distant.sh --nom $NOM --role $ROLE --depuis $IP_CENTRAL --compte $COMPTE $OPT_SUDO --cle '$PUB'"; then
     # Test avec la clé du portail : la commande forcée doit renvoyer l'instantané de CE serveur
     if ssh -i "$CLE" -o BatchMode=yes -o ConnectTimeout=10 -p "$PORT" "$COMPTE@$CIBLE" collecte 2>/dev/null | tail -1 | grep -q "\"nom\": \"$NOM\""; then
       BILAN+=("$NOM : OK")
