@@ -18,7 +18,12 @@ PARTAGE=/msdos/ks/tractafric
 # --- Serveurs de l'infrastructure : NOM:nom_d_hote:role:adresse_IP   (rôles : bdd, repl, app, api)
 SERVEURS="BDD:srv-bdd01:bdd:10.0.1.11 REPL:srv-bdd02:repl:10.0.1.12 APP1:srv-app01:app:10.0.1.21 APP2:srv-app02:app:10.0.1.22 APP3:srv-app03:app:10.0.1.23 API:srv-api01:api:10.0.1.30"
 
-# --- SSH (mode central) : compte utilisé sur les serveurs interrogés, clé du portail, port
+# --- SSH (mode central)
+# ADMIN : compte de connexion pour le déploiement (une fois) ; ELEVATION : su (mot de passe root) ou sudo
+# COMPTE_SSH : compte utilisé ensuite par la collecte automatique. S'il n'est pas root, le déploiement crée une
+#              règle sudo qui ne l'autorise qu'à lancer le collecteur (/etc/sudoers.d/portail-infra).
+ADMIN=root
+ELEVATION=su
 COMPTE_SSH=root
 CLE_SSH=/root/.ssh/portail_infra
 PORT_SSH=22
@@ -36,6 +41,10 @@ INFORMIXDIR=/opt/IBM/informix
 INFORMIXSERVER=ol_tractafric
 ONCONFIG=onconfig.ol_tractafric
 INFORMIXSQLHOSTS=/opt/IBM/informix/etc/sqlhosts
+# Bibliothèques et locales, comme dans le profil du compte informix (facultatif)
+LD_LIBRARY_PATH=
+DB_LOCALE=
+CLIENT_LOCALE=
 # Valeur propre à un serveur : suffixe _<NOM>, par exemple pour l'instance du secondaire :
 # INFORMIXSERVER_REPL=ol_tractafric_rss
 # Profil à charger (mode partage, ou serveur central seulement) : PROFIL_INFORMIX=/home/informix/.bash_profile

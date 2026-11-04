@@ -98,7 +98,7 @@ cp tractafric.conf.exemple tractafric.conf && vi tractafric.conf
 #   INFORMIXDIR / INFORMIXSERVER (INFORMIXSERVER_REPL=... si l'instance du secondaire a un autre nom), BASE=..., URLS_API=...
 
 ./collecteur/deployer-ssh.sh            # clé du portail, collecteur dans /opt/portail-infra sur chaque serveur, test
-                                        # (ADMIN=compte ./collecteur/deployer-ssh.sh si root n'a pas d'accès SSH direct)
+                                        # (root sans accès SSH direct : ADMIN=irium et ELEVATION=su ou sudo dans tractafric.conf)
 ./collecteur/installer-cron.sh --tester # collecte de tous les serveurs + génération du portail
 ./collecteur/installer-cron.sh          # cron toutes les 15 minutes, sur REPL uniquement
 ```
@@ -106,7 +106,11 @@ cp tractafric.conf.exemple tractafric.conf && vi tractafric.conf
 Le déploiement affiche l'empreinte SSH de chaque serveur, à comparer, puis termine par un bilan `OK` ou `ÉCHEC` par serveur.
 
 Points à vérifier :
-- **Root sans connexion SSH** (`PermitRootLogin no`) : mettre `PermitRootLogin forced-commands-only`. Root n'est alors accepté que par une clé à commande forcée. Autre solution : `COMPTE_SSH=un_compte`, auquel cas le déploiement crée la règle sudo limitée au collecteur.
+- **Root sans connexion SSH** :
+  - `ADMIN=irium` et `ELEVATION=su` : connexion en `irium`, puis passage en root par `su -`. Un seul mot de passe par serveur grâce à la connexion SSH partagée ;
+  - `COMPTE_SSH=irium` : la collecte se connecte en `irium`. Le déploiement crée `/etc/sudoers.d/portail-infra`, qui n'autorise `irium` qu'à lancer le collecteur en root, sans mot de passe ;
+  - autre solution : garder `COMPTE_SSH=root` avec `PermitRootLogin forced-commands-only`.
+- **Droits sur la base** : le collecteur interroge Informix en root. Si `magix_prod` n'accorde pas CONNECT à public, lancer en informix : `echo "GRANT CONNECT TO root;" | dbaccess magix_prod`.
 - **Ajouter un serveur ou mettre à jour le collecteur** : `./collecteur/deployer-ssh.sh APP3`.
 - **Tout retirer** : `./collecteur/deployer-ssh.sh --desinstaller`, puis `./collecteur/installer-cron.sh --retirer`.
 

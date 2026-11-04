@@ -335,7 +335,7 @@ def collecter_cron(conf):
 # --------------------------------------------------------------------------------------------
 def env_informix(conf):
     env = dict(os.environ)
-    for k in ('INFORMIXDIR', 'INFORMIXSERVER', 'ONCONFIG', 'INFORMIXSQLHOSTS'):
+    for k in ('INFORMIXDIR', 'INFORMIXSERVER', 'ONCONFIG', 'INFORMIXSQLHOSTS', 'LD_LIBRARY_PATH', 'DB_LOCALE', 'CLIENT_LOCALE'):
         if conf.get(k):
             env[k] = conf[k]
     if env.get('INFORMIXDIR'):
