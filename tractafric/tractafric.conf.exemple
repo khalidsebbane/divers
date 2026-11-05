@@ -11,6 +11,9 @@
 #             le serveur GENERATEUR construit le portail.
 MODE=central
 CENTRAL=REPL
+# Adresse(s) source du central vues par les autres serveurs, si différentes de son IP dans SERVEURS
+# (à lire sur un serveur cible : echo $SSH_CLIENT dans une session ouverte depuis le central). Ex. : 10.255.16.101,10.255.200.181
+SOURCES_CENTRAL=
 
 # --- Stockage sur le serveur central (ou dossier NFS commun en mode partage). Jamais /var ni /tmp.
 PARTAGE=/msdos/ks/tractafric

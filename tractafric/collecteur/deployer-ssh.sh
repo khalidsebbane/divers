@@ -21,6 +21,8 @@ mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
 IP_CENTRAL=""
 for s in $SERVEURS; do IFS=: read -r n h r ip <<< "$s"; [ "$n" = "$CENTRAL" ] && IP_CENTRAL="$ip"; done
 [ -n "$IP_CENTRAL" ] || { echo "IP du serveur $CENTRAL absente de SERVEURS (format NOM:hote:role:IP)" >&2; exit 1; }
+# Adresse(s) sous lesquelles le central se présente aux autres serveurs (plusieurs cartes réseau : liste séparée par des virgules)
+IP_CENTRAL="${SOURCES_CENTRAL:-$IP_CENTRAL}"
 
 if [ ! -f "$CLE" ]; then
   install -d -m 700 "$(dirname "$CLE")"
